@@ -151,7 +151,7 @@ The GitHub Actions workflow pins Tectonic 0.17.0, caches its package bundle, fai
 | The handbook — prose, figures, diagrams | [CC BY 4.0](LICENSE) | Reuse and adapt freely, with attribution |
 | Build tooling — workflow, LaTeX machinery, `index.html` | [MIT](LICENSE-CODE) | Do what you like |
 
-Neither covers the upstream repositories this book documents. Quoted source, configuration, benchmark records and issue text remain the property of their authors under their own repositories' licences. Third-party names and marks belong to their owners and are used descriptively.
+Copyright (c) 2026 Isham Rashik. Neither licence covers the upstream repositories this book documents. Quoted source, configuration, benchmark records and issue text remain the property of their authors under their own repositories' licences. Third-party names and marks belong to their owners and are used descriptively. Full scope in [NOTICE](NOTICE).
 
 ## 🙏 Acknowledgments
 

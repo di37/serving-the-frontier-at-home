@@ -394,24 +394,3 @@ public licenses.
 
 Creative Commons may be contacted at creativecommons.org.
 
-
-=======================================================================
-
-Copyright (c) 2026 Isham Rashik.
-
-This licence covers the handbook "Serving the Frontier at Home" -- its prose,
-figures, diagrams and typesetting -- in book/ and assets/.
-
-It does NOT cover:
-
-  * The build tooling (.github/, book/preamble.tex, book/brand.sty and the
-    other LaTeX machinery), which is MIT licensed. See LICENSE-CODE.
-
-  * The upstream repositories this book documents. Quoted source code,
-    configuration, benchmark records and issue text remain the property of
-    their authors, under the licences of
-    MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark and
-    MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks respectively.
-
-  * NVIDIA, DeepSeek, Z.ai and other third-party names and marks, which
-    belong to their respective owners and are used here descriptively.

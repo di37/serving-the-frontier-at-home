@@ -1,0 +1,26 @@
+Serving the Frontier at Home
+Copyright (c) 2026 Isham Rashik
+
+SCOPE OF THE LICENCES IN THIS REPOSITORY
+========================================
+
+LICENSE (CC BY 4.0) covers the handbook itself: the prose, figures, diagrams
+and typesetting under book/ and assets/. Reuse and adapt freely, with
+attribution.
+
+LICENSE-CODE (MIT) covers the build tooling: the GitHub Actions workflow in
+.github/, the LaTeX machinery (book/preamble.tex, book/brand.sty and the
+document skeleton), and index.html.
+
+NEITHER LICENCE COVERS
+======================
+
+* The upstream repositories this book documents. Quoted source code,
+  configuration, benchmark records, changelog entries and issue text remain
+  the property of their authors, under the licences of:
+      MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark
+      MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks
+
+* Third-party names and marks. NVIDIA, DGX Spark, DeepSeek, Z.ai, Hugging Face
+  and others belong to their respective owners and are used here
+  descriptively, without claim or endorsement.
