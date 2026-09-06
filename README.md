@@ -2,7 +2,19 @@
 
 ![Serving the Frontier at Home — production LLM inference on two NVIDIA DGX Sparks](assets/banner.png)
 
-[![Deploy handbook PDF to Pages](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml/badge.svg)](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml)
+<p align="center">
+  <a href="https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/di37/serving-the-frontier-at-home/deploy.yml?branch=main&label=CI&labelColor=555&color=44cc11"></a>
+  <a href="https://di37.github.io/serving-the-frontier-at-home/"><img alt="Read online" src="https://img.shields.io/badge/read-online-0891B2?labelColor=555"></a>
+  <a href="LICENSE"><img alt="Book licence" src="https://img.shields.io/badge/book-CC%20BY%204.0-0891B2?labelColor=555"></a>
+  <a href="LICENSE-CODE"><img alt="Code licence" src="https://img.shields.io/badge/code-MIT-44cc11?labelColor=555"></a>
+  <img alt="Edition" src="https://img.shields.io/badge/edition-v4.0-blue?labelColor=555">
+  <img alt="Pages" src="https://img.shields.io/badge/pages-229-06B6D4?labelColor=555">
+  <img alt="Chapters" src="https://img.shields.io/badge/chapters-17-06B6D4?labelColor=555">
+  <img alt="Figures" src="https://img.shields.io/badge/figures-84-06B6D4?labelColor=555">
+  <img alt="Built with Tectonic" src="https://img.shields.io/badge/built%20with-Tectonic%200.17-8957e5?labelColor=555">
+  <img alt="Status" src="https://img.shields.io/badge/status-living%20document-blueviolet?labelColor=555">
+  <a href="https://github.com/di37/serving-the-frontier-at-home/issues"><img alt="Contributions" src="https://img.shields.io/badge/contributions-welcome-44cc11?labelColor=555"></a>
+</p>
 
 **[Read the handbook →](https://di37.github.io/serving-the-frontier-at-home/)** &nbsp;·&nbsp; [Download the PDF](https://di37.github.io/serving-the-frontier-at-home/serving-the-frontier-at-home.pdf)
 
@@ -131,6 +143,15 @@ The two source repositories the book documents are expected as sibling clones an
 [Tectonic](https://tectonic-typesetting.github.io/) downloads what it needs on first run, so no TeX distribution is required. With TeX Live instead, use `latexmk -xelatex main.tex`; that path needs `tikz`, `tcolorbox`, `cleveref`, `siunitx`, `listings`, `needspace`, `adjustbox`, `placeins`, `titlesec`, and `graphicx`.
 
 The GitHub Actions workflow pins Tectonic 0.17.0, caches its package bundle, fails the build on any LaTeX error or undefined cross-reference, stamps the live page count and build date into the landing page, and publishes to Pages. On failure it uploads `main.log` as an artifact.
+
+## 📄 Licence
+
+| What | Licence | |
+|------|---------|---|
+| The handbook — prose, figures, diagrams | [CC BY 4.0](LICENSE) | Reuse and adapt freely, with attribution |
+| Build tooling — workflow, LaTeX machinery, `index.html` | [MIT](LICENSE-CODE) | Do what you like |
+
+Neither covers the upstream repositories this book documents. Quoted source, configuration, benchmark records and issue text remain the property of their authors under their own repositories' licences. Third-party names and marks belong to their owners and are used descriptively.
 
 ## 🙏 Acknowledgments
 
