@@ -1,5 +1,3 @@
-# Serving the Frontier at Home
-
 ![Serving the Frontier at Home — production LLM inference on two NVIDIA DGX Sparks](assets/banner.png)
 
 <p align="center">
