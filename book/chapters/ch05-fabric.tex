@@ -225,6 +225,13 @@ port number no sysfs tree can contain, so the token matches nothing and the
 resolve fails closed.
 \end{hbwarstory}
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/toon-ch05-anyport.png}
+\caption{Asking for one door and being handed all of them. Shell arithmetic wraps an arbitrary-width digit string modulo $2^{64}$, and one specific input wraps to exactly $-1$ --- which in this resolver is not an error but the \emph{any port} wildcard. A field too large to represent would therefore have silently widened the selection to every port on the device rather than matching none. The fix refuses anything wider than nine digits, so the token matches nothing and the resolve fails closed.}
+\label{fig:toon-anyport}
+\end{figure}
+
 The guard in the resolver:
 
 \begin{lstlisting}[language=bash]

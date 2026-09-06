@@ -131,6 +131,13 @@ has to bounce a freshly booting pair. The worker-first ordering and the
 ``no mid-boot stop'' rule both date from this incident.
 \end{hbwarstory}
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/toon-ch11-rugpull.png}
+\caption{Meant helpfully, timed catastrophically. The original launcher applied its hotfixes \emph{after} \code{compose up}, then issued a restart while vLLM was still loading --- tearing the head's TCPStore out from under rank~1 and producing ``Worker Exited (1)'' on every single start. Moving the hotfixes into the compose entrypoint, before \code{exec vllm}, means a start never has to bounce a pair that is still coming up.}
+\label{fig:toon-rugpull}
+\end{figure}
+
 \subsection{Health wait, smoke, warmup handoff}
 
 After \code{up -d} on both ranks the launcher polls the authenticated

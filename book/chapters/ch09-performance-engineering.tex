@@ -18,6 +18,13 @@ actually cost. It frames the question this chapter answers: where does
 the time in a decode step \emph{have} to go, and which knobs can still move
 it?
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/toon-ch09-thirdnode.png}
+\caption{Everyone pulling harder; the needle unmoved. A third Spark provably cut the bytes each rank must stream per decode step to $\approx$11.5\,GB, and the streaming model priced the step at $\approx$48\,ms. Measured single-stream decode came out at 64.3 \tokspersec{} --- no faster than two nodes, because thirteen-plus milliseconds of fixed per-step cost ate the entire bandwidth gain. It is the cleanest measurement in either repository of what fixed overhead actually costs.}
+\label{fig:toon-thirdnode}
+\end{figure}
+
 Every serving stack eventually accumulates a folklore of ``fast knobs'' --- flags
 that someone once flipped before a good run. This repository refused to build
 that folklore. Instead it built a cost model from the model's own weight shapes,

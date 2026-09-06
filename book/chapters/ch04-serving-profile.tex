@@ -12,6 +12,13 @@ number 42 was not a mistake --- it is exactly the largest uniform decode
 step at the default profile --- but unrounded it fell off the engine's
 capture stride and left the busiest step running fully eager, silently.
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/toon-ch04-flag42.png}
+\caption{Exactly correct, and exactly wrong. 42 is the largest uniform decode step at the default profile --- six sequences times $k{+}1$ tokens --- so it looks like the right answer and is arrived at honestly. The engine captures on a stride of 8, and an unrounded value falls between the notches: the busiest step runs fully eager, silently, at a measured cost of 12\,\% of six-stream throughput. Rounding up to 48 costs nothing and captures everything.}
+\label{fig:toon-flag42}
+\end{figure}
+
 That flag is not an outlier. A serving stack lives or dies by its launch
 configuration, and this recipe's configuration is unusually load-bearing:
 an empty-but-defined environment variable can silently select the wrong

@@ -378,6 +378,13 @@ enabled boot must never silently serve stock behavior --- and a failed patch
 must never serve half-patched behavior.
 \end{hbwarstory}
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/toon-ch07-quiethero.png}
+\caption{The smallest thing holding back the largest. The guard that named a nonexistent variable had no business working, and it is the reason a corrupted encoder never reached a user: the fail-closed contract turned a latent correctness bug into a loud startup failure. An enabled boot must never quietly serve stock behaviour, and a failed patch must never serve half-patched behaviour.}
+\label{fig:toon-quiethero}
+\end{figure}
+
 \section{Tool-call integrity}
 \label{sec:bugs-toolcalls}
 
