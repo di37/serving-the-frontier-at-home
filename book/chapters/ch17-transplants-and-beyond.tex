@@ -449,6 +449,21 @@ where a user reads it before running anything. The earlier prefill study
 had already set expectations in the same spirit: TP=4 is ``not
 $\sim$2$\times$, different topology, and this is a 2-node recipe.''
 
+\begin{hbnote}
+\textbf{What the next edition owes this section.} The four-Spark lane is the
+one place this book documents a configuration nobody has run. When a
+four-node kit exists it will get the treatment \Cref{ch:scaling} gave the
+third Spark --- one knob per boot, a dated ledger, a fabric census, and a
+verdict that may well be negative. The question is already sharp. Adding a
+third node cut the bytes each rank must stream to $\approx$11.5\,GB and the
+streaming model priced the step at $\approx$48\,ms; measured decode came
+out at 64.3 \tokspersec{}, no faster than two nodes, because fixed per-step
+cost ate the entire bandwidth gain (\Cref{ch:perf}). A fourth node inherits
+that arithmetic and adds collectives on top of it. Whether the curve bends
+or flattens again is not derivable from the byte model. It has to be
+measured --- and until it is, this section is the honest end of the story.
+\end{hbnote}
+
 \section{The fabric truths a fourth Spark rests on}
 
 Whether at two nodes or four, every rank of this deployment stands on a

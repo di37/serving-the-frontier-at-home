@@ -5,7 +5,7 @@ Build and editing notes. For what the book is and who it is for, see the [root R
 ## Build
 
 ```bash
-tectonic main.tex        # -> main.pdf (225 pages)
+tectonic main.tex        # -> main.pdf (229 pages)
 ```
 
 Or, with a TeX Live installation:

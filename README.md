@@ -1,10 +1,10 @@
 # Serving the Frontier at Home
 
-[![Deploy handbook PDF to Pages](https://github.com/di37/miaAI-lab-notes/actions/workflows/deploy.yml/badge.svg)](https://github.com/di37/miaAI-lab-notes/actions/workflows/deploy.yml)
+[![Deploy handbook PDF to Pages](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml/badge.svg)](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml)
 
-**[Read the handbook →](https://di37.github.io/miaAI-lab-notes/)** &nbsp;·&nbsp; [Download the PDF](https://di37.github.io/miaAI-lab-notes/serving-the-frontier-at-home.pdf)
+**[Read the handbook →](https://di37.github.io/serving-the-frontier-at-home/)** &nbsp;·&nbsp; [Download the PDF](https://di37.github.io/serving-the-frontier-at-home/serving-the-frontier-at-home.pdf)
 
-A 227-page technical handbook on running frontier-class language models on two [NVIDIA DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/) desktop machines. It is a complete engineering account of two real systems, written from an exhaustive read of their public repositories: [DeepSeek-v4-Flash-DSpark-2x-DGX-Spark](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark) at commit `f5665e8` and [GLM-5.3-Flash-EXL3-2x-DGX-Sparks](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) at commit `3021f24`. Every patch, benchmark, retraction, and dated changelog entry.
+A 229-page technical handbook on running frontier-class language models on two [NVIDIA DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/) desktop machines. It is a complete engineering account of two real systems, written from an exhaustive read of their public repositories: [DeepSeek-v4-Flash-DSpark-2x-DGX-Spark](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark) at commit `f5665e8` and [GLM-5.3-Flash-EXL3-2x-DGX-Sparks](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) at commit `3021f24`. Every patch, benchmark, retraction, and dated changelog entry.
 
 Nothing in it is invented. Where the source repositories mark evidence as partial or pending, the book says so.
 
@@ -46,7 +46,7 @@ This book is the assembly: the same facts, reordered until they teach. Mechanism
 
 A Quick Reference appendix carries a glossary, two issue indexes (the trackers use colliding numbers), an operational quick card for each recipe, and the source list.
 
-**At a glance:** 227 pages · ~96,000 words · 84 figures · 31 tables · 37 code listings.
+**At a glance:** 229 pages · ~96,000 words · 84 figures · 31 tables · 37 code listings.
 
 ## Using It to Teach
 
@@ -72,12 +72,12 @@ This is a living document. Two revisions are planned rather than merely hoped fo
 
 **Heavier models.** Both recipes serve at the edge of what two 128 GB nodes hold. A larger checkpoint, or the same one at higher precision, changes the weights-versus-KV split that Chapter 4 treats as a fixed premise — and every capacity figure in the book sits downstream of that split. Those chapters will be re-derived, not patched.
 
-Until then the honest scope of this edition is two nodes, and the book says so wherever it looks past that boundary. Every push rebuilds the [hosted PDF](https://di37.github.io/miaAI-lab-notes/), so the published edition is never behind the sources.
+Until then the honest scope of this edition is two nodes, and the book says so wherever it looks past that boundary. Every push rebuilds the [hosted PDF](https://di37.github.io/serving-the-frontier-at-home/), so the published edition is never behind the sources.
 
 ## Repository Structure
 
 ```
-miaAI-lab-notes/
+serving-the-frontier-at-home/
 ├── README.md
 ├── index.html                    # GitHub Pages landing page
 ├── .github/workflows/deploy.yml  # Builds the PDF and publishes it on every push
@@ -109,7 +109,7 @@ The two source repositories the book documents are expected as sibling clones an
 
 | Format | Description |
 |--------|-------------|
-| Hosted PDF | [di37.github.io/miaAI-lab-notes](https://di37.github.io/miaAI-lab-notes/) — rebuilt from source on every push to `main` |
+| Hosted PDF | [di37.github.io/serving-the-frontier-at-home](https://di37.github.io/serving-the-frontier-at-home/) — rebuilt from source on every push to `main` |
 | `.pdf` | Not committed (20 MB) — build it locally with the command below |
 | `.tex` | LaTeX source — compile with `cd book && tectonic main.tex` |
 
