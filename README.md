@@ -1,5 +1,7 @@
 # Serving the Frontier at Home
 
+![Serving the Frontier at Home — production LLM inference on two NVIDIA DGX Sparks](assets/banner.png)
+
 [![Deploy handbook PDF to Pages](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml/badge.svg)](https://github.com/di37/serving-the-frontier-at-home/actions/workflows/deploy.yml)
 
 **[Read the handbook →](https://di37.github.io/serving-the-frontier-at-home/)** &nbsp;·&nbsp; [Download the PDF](https://di37.github.io/serving-the-frontier-at-home/serving-the-frontier-at-home.pdf)
@@ -80,6 +82,7 @@ Until then the honest scope of this edition is two nodes, and the book says so w
 serving-the-frontier-at-home/
 ├── README.md
 ├── index.html                    # GitHub Pages landing page
+├── assets/banner.png             # Repository banner
 ├── .github/workflows/deploy.yml  # Builds the PDF and publishes it on every push
 └── book/
     ├── main.tex                  # Skeleton: cover, preface, both parts, appendix
