@@ -1,0 +1,249 @@
+\chapter{Lessons for Your Own Deployment}
+\label{ch:lessons}
+
+Of eleven plausible performance knobs A/B-tested on this cluster, eight were
+rejected --- including several that ``obviously'' should have helped. The
+single most consequential bug in the system was not a kernel fault or a
+race but a configuration field that existed, defaulted sensibly, and was
+never read. Results like these are why the closing chapter of this handbook
+is not a victory lap: nearly every principle worth keeping was learned by
+watching a reasonable assumption fail in a specific, documented way.
+
+A handbook about one system earns its keep by what transfers out of it. This
+closing chapter collects the principles the preceding twelve chapters
+demonstrated in the concrete --- each stated as doctrine, grounded in the
+incident that taught it, and phrased so it can be applied to a different
+model, a different engine, and different hardware tomorrow.
+
+For an inference engineer, this is the chapter meant to outlive its subject.
+The specific patches are bound to one model, one engine build, and one pair
+of machines; the disciplines --- pinned artifacts, fail-closed patching,
+identity-keyed state, loud failure, public retraction --- are not. Each
+one below carries the incident that proves what skipping it costs.
+
+\section{Change nothing you cannot prove}
+
+\subsection*{1. Pin everything; patch fail-closed}
+The runtime image is pinned by manifest digest, the checkpoint by revision,
+and every runtime modification by the SHA-256 of the bytes it expects to
+find. A patch that cannot prove its target aborts the boot rather than
+serving stock code under an enabled flag (\Cref{ch:patches}). The general
+form: \emph{an optimization or fix that silently fails to apply is worse
+than its absence}, because you will debug the system you believe you
+deployed, not the one you did.
+
+\subsection*{2. ``Defined but unenforced'' is a bug class, not a config style}
+Pinning proves the bytes are present; it cannot prove a knob is connected
+to anything. The starvation arrived with a clean bill of health: decode
+lanes stalled behind prefill with zero preemptions and every dashboard
+green. \code{max_num_partial_prefills} (\ghissue{27}) --- the cap that
+should have bounded the damage --- was connected to nothing that ran. Audit the path
+from every knob you rely on to the code that consumes it. The same family
+produced the dead \code{IntEnum}-vs-string comparison found while auditing
+\ghissue{55}.
+
+\subsection*{3. Exactly-one spelling of ``on''}
+Auditing knob-to-consumer paths is only tractable when the space of ``on''
+is small. Every opt-in here is gated on the literal string \code{1}; every other value
+--- \code{true}, \code{yes}, \code{2}, whitespace --- is stock. Combined with
+default-off for anything unproven, this collapses the configuration state
+space and makes ``what is this cluster running?'' answerable from one file
+plus one rule (\Cref{ch:patches}).
+
+\subsection*{4. Restart is not rollback}
+One file plus one rule answers what the cluster is \emph{configured} to
+run; what it is \emph{actually} running can still diverge.
+Runtime patches live in the container's writable layer; flipping a flag off
+and restarting reuses those bytes. Only recreation restores image truth ---
+and the doctrine must be paired: \emph{both} ranks recreated together, never
+one (\Cref{ch:operations}). Wherever you mutate a running artifact, write
+down what actually reverts it, and test that path.
+
+\section{Identity, capture, and blast radius}
+
+The first four principles govern what you deploy; the next four govern how
+it fails while serving --- and they escalate in scope, from one request's
+state to the whole host.
+
+\subsection*{5. Identity, not position}
+Under continuous batching the engine condenses its running set; anything
+keyed by \emph{batch row} silently reads another request's state after a
+condense. DSpark's draft KV did exactly that, collapsing acceptance at
+concurrency $>1$ with no crash (\Cref{ch:specdecode}). The symptom is
+worth memorizing because it is so ghostly: single-stream benchmarks
+perfect, multi-stream acceptance collapsing, and not one error line ---
+the engine faithfully computing with another request's draft state. Every
+persistent
+per-request tensor needs a request-stable slot map --- and the fix should
+preserve the identity-permutation fast path so the single-stream case stays
+byte-exact.
+
+\subsection*{6. Capture-time state is frozen state}
+The draft-KV bug was state outliving the position that indexed it; the same
+staleness has a compiled form.
+Four separate patches in this system guard the same trap: a CUDA graph
+captures the \emph{decisions} made during capture, not just the kernels. A
+branch on live batch state, a stride from the capture-time batch, a
+shortcut valid only for short contexts --- all replay wrong later, and the
+result is intermittent \emph{corruption}, not a crash (\Cref{ch:bugs}).
+Treat ``is this value allowed to vary after capture?'' as a review question
+on every graphed path, and guard shortcuts with
+\code{is_current_stream_capturing()}.
+
+\subsection*{7. A TP pair fails as a pair}
+Stale identity and frozen capture corrupt individual requests; the blast
+radius widens when ranks are involved. One rank stalled --- in a JIT compile, a lost shared-memory notification, a
+stochastic kernel fault --- leaves its peer blocked in a collective until a
+watchdog kills both. The mitigations generalize: persist every JIT cache
+across container lifecycles, warm known shapes at boot, bound every wait
+(the 5-second reader recheck), and instrument for the post-mortem you will
+need (the flight recorder with its archive-both-ranks rule)
+(\Cref{ch:bugs,ch:operations}).
+
+\subsection*{8. Unified memory: the host is inside the blast radius}
+And the blast radius does not stop at the GPUs. On GB10, activation
+workspaces, compiler caches, and desktop daemons share
+physical memory with the KV pool. Two sound GPU-side tunings were rejected
+purely for host-RAM cost, and the top-ranked improvement on the whole
+cluster was \emph{reclaiming leaked host memory} (\Cref{ch:perf}). The
+audit that ranked it found a serving node running a graphical desktop whose
+polkit daemon had leaked 3.1\,GB of RSS --- bytes drawn from the same
+physical pool the KV cache lives in. On any
+unified-memory platform, \code{MemAvailable} and swap growth belong next to
+GPU metrics in your gating checks --- and disable the desktop OOM killer.
+
+\section{Arithmetic first, knobs second}
+
+With the failure domains mapped, the next three principles govern how
+anything about performance gets decided at all.
+
+\subsection*{9. Derive the bound before touching a knob}
+The bytes-per-step model (\Cref{ch:perf}) predicted that c=1 decode is
+$\sim$80\% weight streaming --- and therefore that no configuration knob
+would double it, that concurrency and acceptance were the real levers, and
+that a third GPU would buy capacity rather than single-stream speed. Every
+subsequent measurement, including the TP=3 natural experiment, agreed. An afternoon of
+arithmetic prevented a month of misdirected tuning.
+
+\subsection*{10. One knob per boot, gates before numbers, noise bands before verdicts}
+The model says which levers can matter; measurement decides whether a given
+knob moves one. The A/B campaigns changed exactly one variable per boot; verified boot gates
+on both ranks before measuring; pooled eight trials because single-stream
+noise was $\pm$10\,\tokspersec{}; and pre-committed verdict rules (``any drop
+$\Rightarrow$ revert''). The verdicts this bought were unambiguous:
+TC-decode, a knob that ``obviously'' should have helped, posted 7 of 8
+trials below the baseline \emph{minimum} and was rejected on distribution
+separation, not a point estimate (\Cref{ch:measurement}). Without this
+discipline, the configuration would have accreted every plausible-looking
+knob.
+
+\subsection*{11. Benchmarks lie in systematic, catalogable ways}
+All of that discipline still assumes the instrument itself tells the truth.
+Several of the most alarming regressions this cluster ever recorded traced
+to the measuring instrument, not the model --- and the pitfalls are
+systematic and catalogable, not exotic. Each one produced a concrete false alarm in
+\Cref{ch:measurement} before being codified into the audit suite's five
+principles; steal the principles, they are engine-agnostic.
+
+\section{Fail loud at the boundary}
+
+Instruments are not the only boundary that can lie; the serving API is one
+too, and its lies outlive the request.
+
+\subsection*{12. Protocol errors poison agent history}
+An HTTP 400 on one turn --- an image part in the wrong role, a truncated
+tool call replayed --- stays in the client's transcript and fails every
+subsequent request of the session. Three separate incident families
+(\ghissue{55}, \ghissue{52}, \ghissue{178}) taught the same rule: signal
+failure in-band the way clients actually recover (\code{finish_reason},
+completed-turn semantics), and validate at the boundary the way agents
+actually replay (\Cref{ch:bugs}).
+
+\subsection*{13. Fail visible, or fail closed --- never fail plausible}
+Failing loud in-band handles the errors the server notices; the harder
+class is the failure it does not. The gravest failures here were the quiet
+ones: HTTP 200 with zero tool calls
+(\ghissue{191}), silent stream truncation with a missing
+\code{finish_reason} (\ghissue{141}), acceptance collapse with perfect
+uptime. The countermeasures share a shape: check the contract after
+generation and prefer a 500 to a wrong 200; watch for \emph{absence}
+(missing terminal fields) as the earliest signal; and put quality metrics,
+not just liveness, on the dashboard.
+
+\section{Version your beliefs}
+
+The thirteen principles above all assume something quieter: that what the
+team \emph{believes} about the system is itself maintained --- dated,
+versioned, and revocable. This last discipline is the one the others
+depend on, because a pinned byte proves nothing to a team that will not
+un-believe a stale number.
+
+\subsection*{14. Version your beliefs like your code}
+This repository retracts in public: the ``\envvar{MAX_NUM_SEQS=32} is safe''
+framing was withdrawn when repeated bursts showed stochastic per-burst
+failure; an n=1 evidence matrix (\ghissue{143}) was struck; an A/B verdict
+was demoted when the scheduler fix beneath it (\code{r3}) invalidated its
+conditions; a patch ships with an explicit ``no rescue claim'' because the
+live defect never reproduced under test. The retraction is not an apology
+appended to the record --- it is architecture, carried in the same files
+the configuration ships in, where the next operator cannot miss it. Dated
+results, named noise bands,
+best-seen-versus-norm distinctions, and evidence-status paragraphs are what
+let a months-old number be trusted --- or correctly distrusted --- today
+(\Cref{ch:measurement,ch:perf}).
+
+\begin{hblesson}
+If a single sentence must carry this chapter: \emph{make every claim your
+system embodies --- a pinned byte, an enforced config knob, a measured
+number, a safety statement --- checkable, and make every failure loud.}
+The forty patches, the hash pins, the exit codes, the audit suite, and the
+retractions are one idea wearing five uniforms.
+\end{hblesson}
+
+\section{A closing word}
+
+Two desktop machines, one cable, and a public repository now serve a
+million-token frontier model with vision and tools at interactive speed ---
+not because any single component is miraculous, but because dozens of
+unglamorous disciplines compound: a scheduler cap actually enforced, a GID
+left deliberately unpinned, a cache that outlives its container, a
+benchmark that refuses to warm its own prefix. That compounding is
+available to any team willing to do the reading, the pinning, and the
+measuring. This handbook exists so the next team starts from chapter
+thirteen instead of issue \ghissue{21}.
+
+What changes on the way out of Part~I is the unit of reuse. Almost nothing
+here transfers as a patch --- the hunks are bound to one image digest, one
+checkpoint revision, one attention geometry --- but the fourteen principles
+travel precisely because each is a habit rather than a diff: prove the
+bytes, enforce the knob, key state by identity, count the host's memory,
+distrust the instrument, date every belief. Read that way, this is less a
+recipe for one cluster than a checklist for the next system, including one
+whose weights nobody in the lab has quantized.
+
+\FloatBarrier
+\section*{Takeaways}
+\begin{itemize}
+  \item Change nothing you cannot prove: artifacts pinned by digest and
+    revision, patches that abort the boot rather than apply silently,
+    exactly one spelling of ``on,'' and a rollback path you have actually
+    tested --- recreate, because restart reuses the writable layer.
+  \item Correctness in a distributed engine is identity, capture, and blast
+    radius: state keyed by request rather than batch row, graphs that
+    freeze nothing allowed to vary, the TP pair as one failure domain, and
+    host memory counted alongside GPU memory on unified-memory silicon.
+  \item Measure like an adversary and retract in public: derive the bound
+    before touching a knob, change one variable per boot, prefer a loud
+    failure to a plausible success --- a system's epistemics are part of
+    its architecture, and a belief nobody dated cannot be trusted later.
+\end{itemize}
+
+\chaptertransition{The DeepSeek story ends here; the lab did not stop. The
+same two Sparks, the same TP=2 topology over the same cable, were soon
+serving a second frontier model down the opposite road --- not the vendor's
+own native-precision weights but a community contributor's 4-bit EXL3
+trellis quant, a DFlash2 drafter, and CUDA kernels written in-house --- so
+Part~II covers only what this recipe could not teach. It opens on a
+checkpoint that arrives owing proof: somebody else's arithmetic at 54\,\%
+of the bytes, which must demonstrate it is not a lobotomy before it is
+allowed to serve, on a stack that cannot even load its KV layout.}

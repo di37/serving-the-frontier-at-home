@@ -1,0 +1,47 @@
+% =============================================================================
+% Serving the Frontier at Home
+% A Technical Handbook of Production LLM Inference on 2x NVIDIA DGX Spark
+% -----------------------------------------------------------------------------
+% Built from an exhaustive read of the MiaAI-Lab repository
+%   DeepSeek-v4-Flash-DSpark-2x-DGX-Spark
+% Intended audience: AI architect engineers and inference engineers.
+% Build: tectonic main.tex   (or latexmk -pdf main.tex)
+% =============================================================================
+\documentclass[11pt,openany]{book}
+\input{preamble}
+
+\title{\Huge\bfseries Serving the Frontier at Home\\[0.6em]
+  \Large A Technical Handbook of Production LLM Inference\\
+  on Two NVIDIA DGX Sparks}
+\author{Mia's AI Lab --- annotated engineering edition}
+\date{September 2026}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+
+\input{chapters/preface}
+
+\tableofcontents
+
+\mainmatter
+
+\input{chapters/ch01-problem-and-hardware}
+\input{chapters/ch02-architecture}
+\input{chapters/ch03-model-anatomy}
+\input{chapters/ch04-serving-profile}
+\input{chapters/ch05-fabric}
+\input{chapters/ch06-patch-discipline}
+\input{chapters/ch07-bug-chronicles}
+\input{chapters/ch08-speculative-decoding}
+\input{chapters/ch09-performance-engineering}
+\input{chapters/ch10-measurement}
+\input{chapters/ch11-operations}
+\input{chapters/ch12-scaling-paths}
+\input{chapters/ch13-lessons}
+
+\backmatter
+\input{chapters/appendix}
+
+\end{document}

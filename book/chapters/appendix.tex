@@ -1,0 +1,242 @@
+\chapter{Quick Reference}
+\label{ch:appendix}
+\markboth{Quick Reference}{Quick Reference}
+% Backmatter chapter is unnumbered; number its tables as A.n, not 17.n.
+\renewcommand{\thetable}{A.\arabic{table}}
+\setcounter{table}{0}
+
+\section*{Glossary}\addcontentsline{toc}{section}{Glossary}
+
+Terms marked (II) belong to the GLM recipe of Part~II; the rest are
+Part~I's, and several are shared.
+
+\begin{description}
+  \item[Abliteration (II)] Editing a model's weights to remove its
+    refusal behavior. The GLM recipe implements it as a byte transplant
+    governed by a sha256 manifest rather than as an orthogonalization,
+    because the published refusal directions measured at random-unit-vector
+    level against stock \code{o_proj} (\Cref{ch:transplants}).
+  \item[Anemll image] The prebuilt, digest-pinned GB10 vLLM runtime
+    (\repofile{ghcr.io/anemll/dspark-vllm-gx10:0.1.1}) that this recipe
+    patches at boot rather than rebuilding.
+  \item[B12X] The image's MoE kernel backend for GB10
+    (\code{--moe-backend flashinfer_b12x}), built on CuTeDSL; runs the
+    experts as W4A16 on this checkpoint.
+  \item[DFlash2 (II)] The GLM recipe's drafter: a \emph{separate}
+    $\approx$2.3\,GiB Qwen3-architecture draft model
+    (\code{incoai/GLM-5.3-Flash-DFlash2}), run at $k{=}7$ with a trained
+    block of 8 --- the structural opposite of DSpark's checkpoint-native
+    design (\Cref{ch:dflash2}).
+  \item[DSML] DeepSeek's markup language for tool calls
+    (\code{<|DSML|tool_calls>} / \code{invoke} / \code{parameter} blocks)
+    emitted as ordinary tokens and parsed server-side into structured
+    \code{tool_calls}.
+  \item[DSpark] The checkpoint's built-in speculative-decoding drafter:
+    block drafting (block size 5) via stacked MTP stages in one non-causal
+    pass, sampled left-to-right with a rank-256 Markov head.
+  \item[E2 fat-expert kernels (II)] The hand-written CUDA kernels
+    merged as PR~77, which removed the ``fat tax'' on fully uncached prefill
+    that the profile-first campaign of \Cref{ch:quantized-bet} had priced.
+  \item[EXL3 / TR3 (II)] The community quantization the GLM recipe
+    serves: brandonmusic's 4-bits-per-weight trellis format
+    (\code{GLM-5.3-Flash-tr3-4bpw}), chosen instead of a native NVFP4
+    checkpoint --- Part~II's central bet (\Cref{ch:quantized-bet}).
+  \item[GB10 / SM121] The Grace--Blackwell superchip in a DGX Spark and its
+    CUDA compute capability (kernels target \code{sm_121a}); 128\,GB unified
+    LPDDR5X shared by CPU and GPU.
+  \item[GID (RoCE)] The per-port address table entry NCCL must select to
+    speak RoCEv2 over IPv4; indexes differ per HCA and drift, hence the
+    validate-and-leave-unset doctrine of \Cref{ch:fabric}.
+  \item[Indexer workspace right-sizing (II)] Measuring the sparse
+    indexer's scratch allocation and reserving exactly what the shapes
+    require, rather than over-reserving against a guess. Merged as PR~86;
+    the change came to 1{,}743 lines, 819 of them tests
+    (\Cref{ch:bytes-by-proof}).
+  \item[KpoolTailManager (II)] The sparse-MLA hybrid pool manager.
+    It disables fine-grained prefix-cache hits, so only block-aligned tokens
+    count and the alignment is the 3{,}584-token hybrid MLA page
+    (\Cref{ch:bytes-by-proof}).
+  \item[Lightning indexer] The model's sparse-attention scorer: 64 index
+    heads, replicated on every TP rank, selecting top-$k$ compressed keys
+    per query; dominates long-context prefill cost.
+  \item[MLA] Multi-head latent attention: attention over a compressed latent
+    KV, which every TP rank holds in full --- the reason a third GPU does not
+    shrink attention work.
+  \item[MTP] Multi-token prediction --- the extra model stages the drafter
+    is built from; \envvar{MTP_NUM_TOKENS} is the draft depth $k$.
+  \item[NVFP4 / \code{nvfp4_ds_mla}] The KV-cache dtype string of the
+    default profile. On this image its 584-byte row is byte-identical to
+    \code{fp8_ds_mla}; a true 4-bit row is a design, not a shipped feature
+    (\Cref{ch:scaling}).
+  \item[Prefix caching] Reuse of previously computed KV blocks when a new
+    request shares a prompt prefix; interacts with sliding-window groups
+    (\ghissue{26}) and with honest benchmarking (\Cref{ch:measurement}).
+  \item[RoCE v2] RDMA over Converged Ethernet; the transport NCCL uses
+    across the pair's direct 200\,Gb link.
+  \item[Stage-C] The historical locally built runtime overlay
+    (\repofile{vllm-dspark-runtime:dspark-nvfp4-stage-c}) whose
+    \envvar{VLLM_DSPARK_*} kill-switches are no-ops on the Anemll image.
+  \item[SWA] Sliding-window attention groups in the hybrid KV layout (used
+    by the drafter and indexer caches), with different eviction behavior
+    than the main MLA group.
+  \item[TP] Tensor parallelism --- each layer's weights split across ranks,
+    synchronized by collectives every step. TP=2 default; TP=3 optional in
+    Part~I, and an experimental TP=4 lane in Part~II
+    (\Cref{ch:transplants}).
+\end{description}
+
+\section*{Issue index}\addcontentsline{toc}{section}{Issue index}
+
+The numbered incidents that structure this book, with the chapter that treats
+each in depth. The two parts cite two different trackers, and the numbering
+collides: \ghissue{26}, \ghissue{55}, and \ghissue{105} name one thing in the
+DeepSeek tracker and something else entirely in the GLM tracker. The tables
+are therefore kept separate, and Part~II's prose names its tracker at every
+citation.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Part~I: DeepSeek tracker, issue-to-chapter index.}
+\label{tab:appendix:issues}
+\begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{72mm}@{}}
+\toprule
+\textbf{Issue} & \textbf{Chapter} & \textbf{One-line summary} \\
+\midrule
+\ghissue{21} & \Cref{ch:bugs} & Encoder double-wrapped dict tool arguments \\
+\ghissue{22} & \Cref{ch:bugs} & \code{nvfp4_ds_mla} dispatched to slow kernel (1 vs 17\,\tokspersec{}) \\
+\ghissue{26}/\ghissue{36} & \Cref{ch:bugs} & Hybrid SWA prefix-cache collapse, then v1 overcorrection \\
+\ghissue{27}/\ghissue{154}/\ghissue{211} & \Cref{ch:bugs} & Partial-prefill admission cap saga; default 1$\to$2$\to$1 \\
+\ghissue{31}/\ghissue{66} & \Cref{ch:profile} & GPU \code{thinking_token_budget}; made opt-in \\
+\ghissue{38}/\ghissue{72} & \Cref{ch:operations} & Restart policy vs launcher; exit-3 contract \\
+\ghissue{43} & \Cref{ch:bugs} & Decode service floor during mixed prefill steps \\
+\ghissue{52}/\ghissue{120} & \Cref{ch:bugs} & Assistant-final dead-state rendering; reminder tail \\
+\ghissue{55} & \Cref{ch:bugs} & Truncated tool calls reported \code{tool_calls} \\
+\ghissue{79} & \Cref{ch:bugs} & SHM spin-wait burning P-cores (1\,s $\to$ 2\,ms) \\
+\ghissue{105} & \Cref{ch:operations} & Malformed inflight-prefill env crashed admission \\
+\ghissue{117} & \Cref{ch:bugs} & JIT-cache loss $\to$ mid-serve compile $\to$ TP watchdog kill \\
+\ghissue{133} & \Cref{ch:bugs} & Triton compile-key explosion on sliced pointers \\
+\ghissue{136}/\ghissue{210} & \Cref{ch:bugs} & XGrammar tokens-after-termination chain \\
+\ghissue{138} & \Cref{ch:patches} & Responses history replay compatibility (opt-in) \\
+\ghissue{141}/\ghissue{143} & \Cref{ch:bugs} & Stochastic sparse-MLA stall; retracted safety matrix \\
+\ghissue{165}--\ghissue{181} & \Cref{ch:bugs} & The image-tag false-positive 400 saga (four rounds) \\
+\ghissue{172}/\ghissue{175} & \Cref{ch:bugs} & Vision pad hashing; image tokens on text router \\
+\ghissue{185} & \Cref{ch:operations} & Healthcheck probed loopback on LAN-IP binds \\
+\ghissue{191} & \Cref{ch:bugs} & Named-tool contract leak; thinking-off fallback \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Part~II: GLM tracker, issue and pull-request index.}
+\label{tab:appendix:glm-issues}
+\begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{72mm}@{}}
+\toprule
+\textbf{Issue / PR} & \textbf{Chapter} & \textbf{One-line summary} \\
+\midrule
+\ghissue{6} & \Cref{ch:bytes-by-proof} & Mixed prefill/decode scheduler floor; never mix a peer prefill into a decode step \\
+PR~8 & \Cref{ch:bytes-by-proof} & Compress-ratio cross-check draft, rejected by review as a blocker \\
+PR~16 & \Cref{ch:transplants} & GID preflight on both nodes: an index must name a real RoCE-v2 entry \\
+PR~25 & \Cref{ch:bytes-by-proof} & \envvar{CG_ESTIMATE=0}: vLLM's CUDA-graph reservation vs the 2.43\,GiB measurement \\
+PR~26 & \Cref{ch:transplants} & Per-rank RoCEv2 GID (\envvar{HEAD_GID} / \envvar{WORKER_GID}); indexes differ per node \\
+PR~38 & \Cref{ch:bytes-by-proof} & Numeric knob validation; the scar on the fail-closed rule \\
+PR~48/PR~49 & \Cref{ch:dflash2} & \envvar{DFLASH_DRAFT_TP=2} default: sharding the drafter was a keep, not a wash \\
+PR~55 & \Cref{ch:transplants} & Credits retraction: an incorrect attribution withdrawn in-tree \\
+PR~63 & \Cref{ch:bytes-by-proof} & Thinking-off header divergence at token~2; a one-line guard, a full re-prefill \\
+PR~77 & \Cref{ch:quantized-bet} & The E2 fat-expert CUDA kernels; the fat tax removed properly \\
+PR~86 & \Cref{ch:bytes-by-proof} & Indexer workspace right-sizing (1{,}743 lines, 819 of them tests) \\
+PR~105 & \Cref{ch:transplants} & Experimental \repofile{start-tp4.sh}: TP=4 shipped without the hardware to measure it \\
+PR~126 & \Cref{ch:transplants} & Issue forms and PR template; the knob surface enumerated, blank issues disabled \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\Needspace{10\baselineskip}
+\section*{Operational quick card}\addcontentsline{toc}{section}{Operational quick card}
+
+\textbf{Part~I --- the DeepSeek recipe.}
+
+\begin{lstlisting}[language=bash]
+# Weights (head; both nodes unless NFS mode)
+./prepare-dspark-model-cache.sh --official
+
+# Start (worker first, automatically), verify, use
+./start-deepseek-v4-flash-dspark.sh        # exit 3 = already up (OK)
+curl -fsS http://127.0.0.1:8888/v1/models
+./smoke-deepseek-v4-flash-dspark.sh
+./status-deepseek-v4-flash-dspark.sh
+
+# Full quality audit against the live pair
+bash scripts/run-audit.sh --base-url http://127.0.0.1:8888/v1 \
+     --model deepseek-v4-flash-vision-exp
+
+# Any flag flip: recreate BOTH ranks (restart is not rollback)
+./stop-deepseek-v4-flash-dspark.sh && ./start-deepseek-v4-flash-dspark.sh
+\end{lstlisting}
+
+Golden rules, in one place: never set \envvar{DSPARK_MODEL} or
+\envvar{GPU_MEMORY_UTILIZATION} by hand; leave
+\envvar{VLLM_USE_BREAKABLE_CUDAGRAPH=0}; disable \code{earlyoom} on both
+hosts; treat a missing \code{finish_reason} as the first sign of silent
+truncation; and archive both ranks' flight-recorder dumps together before
+restarting a wedged pair.
+
+\Needspace{10\baselineskip}
+\textbf{Part~II --- the GLM recipe.} One launcher does everything; there is
+no separate stop, status, or smoke script.
+
+\begin{lstlisting}[language=bash]
+# Weights (head HF cache only; start.sh does this too if missing)
+./download.sh
+
+# Start: pull public GHCR :exl3, download if missing, rsync, launch TP=2
+./start.sh                    # first run copies .env.example -> .env
+
+# Inspect and stop
+./start.sh status
+./start.sh logs               # head; `logs worker` for the other rank
+./start.sh stop               # or ./stop.sh
+
+# Skip stages when the weights and image are already local
+SKIP_PULL=1 SKIP_DOWNLOAD=1 SKIP_SYNC=1 ./start.sh restart
+
+# Experimental 4-Spark lane (unmeasured: the lab has no 4-Spark kit)
+./start-tp4.sh                # stop | logs 1|2|3 for a worker rank
+\end{lstlisting}
+
+Golden rules for this recipe: do not pull the \code{glm53-flash-sm121:v8}
+image --- it is the older NVFP4/Ray kernel, not the EXL3 build; leave
+\envvar{DFLASH_DRAFT_TP} at 2, because sharding the drafter was measured a
+keep rather than a wash; and read TP=4 as a shipped configuration with no
+evidence behind it, which is exactly how its own authors scope it.
+
+\section*{Sources}\addcontentsline{toc}{section}{Sources}
+
+This handbook was written against two repositories, one per part.
+
+\textbf{Part~I} draws on
+\repofile{MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark} at commit
+\code{f5665e8} (2026-09-05), reading: \repofile{README.md},
+\repofile{CHANGELOG.md}, \repofile{AUDIT.md}, all of \repofile{docs/}
+(including the \repofile{docs/CLAUDE/} engineering reports and A/B records),
+all 42 files under \repofile{patches/}, all 66 files under
+\repofile{scripts/}, \repofile{tests/}, \repofile{recipe/},
+\repofile{vllm_patch_gb10/}, \repofile{lmcache/}, \repofile{files/},
+\repofile{results/}, the launcher and Compose files, and
+\repofile{.env.dspark.example}.
+
+\textbf{Part~II} draws on
+\repofile{MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks} at commit
+\code{3021f24} (2026-09-05), reading: \repofile{README.md}, all of
+\repofile{docs/} (including the design notes behind indexer-workspace
+right-sizing), all 21 sources under \repofile{overlay/} including the
+hand-written CUDA kernels, all 19 files under \repofile{tests/}, the
+\repofile{ablit/} abliteration pipeline, \repofile{examples/},
+\repofile{files/}, \repofile{scripts/}, the \repofile{Dockerfile}, both
+launchers (\repofile{start.sh} and \repofile{start-tp4.sh}),
+\repofile{download.sh}, the example environment files, and all 125 commits
+of the project's history.
+
+Measured numbers retain their in-repository dates and lanes; readers should
+treat each repository itself as the living source of truth beyond the commit
+quoted here.

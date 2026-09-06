@@ -1,0 +1,121 @@
+name: Deploy handbook PDF to Pages
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  TECTONIC_VERSION: "0.17.0"
+  PDF_NAME: "serving-the-frontier-at-home.pdf"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache Tectonic package bundle
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Tectonic
+          key: tectonic-bundle-${{ env.TECTONIC_VERSION }}-${{ hashFiles('book/preamble.tex', 'book/brand.sty') }}
+          restore-keys: |
+            tectonic-bundle-${{ env.TECTONIC_VERSION }}-
+
+      - name: Install Tectonic
+        run: |
+          set -euo pipefail
+          url="https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "$url" -o tectonic.tar.gz
+          tar -xzf tectonic.tar.gz
+          sudo install -m 0755 tectonic /usr/local/bin/tectonic
+          tectonic --version
+
+      - name: Build the handbook
+        working-directory: book
+        run: tectonic --keep-logs --print main.tex
+
+      - name: Fail on LaTeX errors or undefined references
+        working-directory: book
+        run: |
+          set -euo pipefail
+          if grep -qiE '^! |Reference .* undefined|Citation .* undefined' main.log; then
+            echo "::error::LaTeX errors or undefined references in main.log"
+            grep -inE '^! |Reference .* undefined|Citation .* undefined' main.log | head -40
+            exit 1
+          fi
+          echo "No LaTeX errors and no undefined references."
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp book/main.pdf "dist/${PDF_NAME}"
+          cp index.html dist/index.html
+
+          pages=$(pdfinfo "dist/${PDF_NAME}" | awk '/^Pages:/ {print $2}')
+          size=$(du -h "dist/${PDF_NAME}" | cut -f1 | tr -d '[:space:]' | sed 's/M$/ MB/; s/G$/ GB/; s/K$/ KB/')
+          built=$(date -u '+%-d %B %Y')
+
+          # The cover is the single source of truth for the edition number.
+          version=$(grep -o 'Version: v[0-9.]*' book/main.tex | head -1 | sed 's/Version: //')
+          [ -n "$version" ] || { echo "::error::no version string in book/main.tex"; exit 1; }
+
+          # The landing page ships with real values so it renders standalone;
+          # refresh them here from the PDF that was just built.
+          VERSION="$version" PAGES="$pages" SIZE="$size" BUILT="$built" python3 - <<'PY'
+          import os, re, sys, pathlib
+          meta = (f"{os.environ['VERSION']} &middot; {os.environ['PAGES']} pages "
+                  f"&middot; {os.environ['SIZE']} &middot; rebuilt {os.environ['BUILT']}")
+          p = pathlib.Path("dist/index.html")
+          html = p.read_text(encoding="utf-8")
+          new, n = re.subn(
+              r'(<div class="download-meta" id="pdf-meta">).*?(</div>)',
+              lambda m: m.group(1) + meta + m.group(2),
+              html, count=1, flags=re.S)
+          if n != 1:
+              sys.exit("::error::could not find the #pdf-meta line in index.html")
+          p.write_text(new, encoding="utf-8")
+          print("landing page stamped:", meta)
+          PY
+
+          # The download button must point at the file we actually published.
+          grep -q "href=\"${PDF_NAME}\"" dist/index.html \
+            || { echo "::error::index.html does not link ${PDF_NAME}"; exit 1; }
+
+          echo "Built ${PDF_NAME}: ${version}, ${pages} pages, ${size}, ${built}"
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tectonic-log
+          path: book/main.log
+          if-no-files-found: ignore
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,1 @@
+Unified memory as a contested budget. The utilization target governs only weights plus KV pool; workspaces, JIT caches, NCCL buffers and every host process spend the same 128 GB from outside it. Because vLLM sizes the pool from the minimum across ranks, the worker's 3.1 GB polkitd leak and desktop session were shrinking the KV cache on both nodes (September 2026 audit).

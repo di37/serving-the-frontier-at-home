@@ -1,0 +1,76 @@
+% =============================================================================
+% Serving the Frontier at Home
+% A Technical Handbook of Production LLM Inference on 2x NVIDIA DGX Spark
+% -----------------------------------------------------------------------------
+% Isham Rashik brand edition (brand.sty). Build: tectonic main.tex
+% Source repository: MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark @ f5665e8
+% =============================================================================
+\documentclass[11pt,a4paper,openany]{book}
+\input{preamble}
+
+\title{Serving the Frontier at Home}
+
+\begin{document}
+
+\frontmatter
+
+% ---- Branded cover ----------------------------------------------------------
+\thispagestyle{empty}
+\vspace*{\fill}
+\noindent\badge{From Scratch}\\[12pt]
+{\fontsize{30}{37}\selectfont\bfseries\color{navy}Serving the Frontier at Home\par}
+\vspace{6pt}
+{\Large\color{teal}A Technical Handbook of Production LLM Inference\\
+on Two NVIDIA DGX Sparks\par}
+\vspace{18pt}
+{\color{teal}\rule{0.6\textwidth}{2pt}}\par
+\vspace{18pt}
+{\color{navy}\textbf{\brandname} \textperiodcentered{} \brandtitle\\
+\brandslogan\\
+\branddescriptor\par}
+\vspace{8pt}
+{\small\color{brandgray}Version: v4.0 \textperiodcentered{} September 2026\\
+Source systems: \hburl{MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark} @ \hburl{f5665e8}\\
+\hphantom{Source systems: }\hburl{MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks} @ \hburl{3021f24}\par}
+\vspace*{\fill}
+{\small\color{brandgray}%
+\brandgithub{} \textperiodcentered{} \brandhuggingface\\
+\brandlinkedin\\
+\brandlocation\par}
+\clearpage
+
+\input{chapters/preface}
+
+\tableofcontents
+
+\mainmatter
+
+\part{The DeepSeek Recipe}
+
+\input{chapters/ch01-problem-and-hardware}
+\input{chapters/ch02-architecture}
+\input{chapters/ch03-model-anatomy}
+\input{chapters/ch04-serving-profile}
+\input{chapters/ch05-fabric}
+\input{chapters/ch06-patch-discipline}
+\input{chapters/ch07-bug-chronicles}
+\input{chapters/ch08-speculative-decoding}
+\input{chapters/ch09-performance-engineering}
+\input{chapters/ch10-measurement}
+\input{chapters/ch11-operations}
+\input{chapters/ch12-scaling-paths}
+\input{chapters/ch13-lessons}
+
+\part{The GLM Counterpoint}
+
+\input{chapters/ch14-quantized-bet}
+\input{chapters/ch15-dflash2}
+\input{chapters/ch16-bytes-by-proof}
+\input{chapters/ch17-transplants-and-beyond}
+
+\backmatter
+\input{chapters/appendix}
+
+\brandcta[figures/linkedin-qr.png]
+
+\end{document}

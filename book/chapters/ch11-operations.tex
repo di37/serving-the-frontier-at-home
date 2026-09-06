@@ -1,0 +1,921 @@
+% =============================================================================
+% Chapter 11 — Operations: Running the Pair
+% =============================================================================
+\chapter{Operations: Running the Pair}
+\label{ch:operations}
+
+\code{docker compose up} is one line. The launcher that actually starts this
+cluster, \repofile{start-deepseek-v4-flash-dspark.sh}, is a 1{,}753-line
+shell program. The gap between those two numbers is the subject of this
+chapter. A two-node tensor-parallel serving pair is one distributed system
+pretending to be one server: every operational act --- starting, stopping,
+checking, updating weights --- must happen on \emph{both} ranks, in the
+right order, with the same configuration bytes. Otherwise the pair degrades
+into the worst failure mode in distributed serving: two containers that each
+look individually fine while the TP group between them is dead or stale.
+
+This chapter is the runbook for the repository's operational surface --- the
+launcher, the stop/status/smoke/prepare scripts, the JIT-cache and warmup
+doctrine, and the incident-response machinery --- with the rationale behind
+each rule. On this stack, almost every rule is a scar from a numbered
+incident. The worker-first boot order, the exit-code contract, the
+persisted-cache doctrine, the flight-recorder wiring: each exists because
+its absence once took the pair down.
+
+For an inference engineer, this is the chapter where availability is
+actually decided. The incidents that cost this cluster the most serving time
+were not exotic kernel faults; they were ordinary operational acts done in
+the wrong order --- a restart issued while a rank was still loading, a
+stale worker left serving after a head-only reboot, a JIT cache discarded
+on container recreate that later killed the pair through the 600\,s NCCL
+watchdog. Serving performance is earned in the other chapters; whether
+anyone gets to experience it is earned here.
+
+\section{The lifecycle of a start}
+\label{sec:ops-lifecycle}
+
+The launcher's 1{,}753 lines are organized as a strict pipeline: normalize
+configuration, validate everything that can be
+validated cheaply, synchronize files to the worker, preflight every risky
+patcher, and only then start containers --- worker first, head second.
+After that it polls health, fires a smoke request, and hands off to the
+warmup sweep.
+\Cref{fig:ops-boot-swimlane} shows the whole sequence. The ordering follows
+one invariant: every check that can fail is placed where failing is free ---
+before either node has a container, and, where a check genuinely needs a
+container, inside a throwaway one.
+
+\subsection{One private environment snapshot}
+
+\repofile{.env.dspark} may carry API keys, and it does not stay on the head:
+the launcher ships a copy to the worker node so both ranks consume identical
+configuration bytes. Everything the launcher does with the file follows from
+those stakes. It never sources the operator's file directly: it copies it
+through \code{sed} to strip a UTF-8 BOM and CR line endings, into a
+\code{mktemp} file chmod'ed to \code{0600}, and sources \emph{that}. The
+same snapshot is then reused as the \code{--env-file} for every Compose
+invocation (\code{COMPOSE_DISABLE_ENV_FILE=1} ensures Compose sees only this
+file). The operator's file stays byte-identical; head, Compose, and worker
+all consume one normalized copy (PR \ghissue{98}).
+
+The worker's copy is published the same way: streamed over ssh into a
+private \code{umask 077} sibling file and renamed atomically with
+\code{mv -f}, so a failed transfer can neither truncate nor expose the
+previous environment file.
+
+The snapshot is also where the launcher enforces its ambient-credential guard:
+\envvar{DSPARK_API_KEYS} set in the calling shell but differing from the env
+file is an immediate exit 2, because a probe must never authenticate with a
+different key set than the server was started with.
+
+\subsection{Validation before side effects}
+
+Between snapshot and sync, the launcher runs a battery of checks that all fail
+\emph{before} anything is created on either node:
+
+\begin{itemize}
+  \item \textbf{Numeric knobs.} \repofile{dspark-numeric-knobs.sh} validates
+    \envvar{MAX_NUM_SEQS}, \envvar{MTP_NUM_TOKENS}, and
+    \envvar{MAX_NUM_BATCHED_TOKENS} (\Cref{sec:ops-hygiene}) and rewrites the
+    snapshot so both ranks see identical normalized decimals.
+  \item \textbf{Speculative constraints.} On Vision-Exp,
+    \envvar{MTP_NUM_TOKENS} must be $\geq 5$ and divisible by 3
+    (\code{num_nextn_predict_layers=3}), unless the block-$k$ unlock is enabled;
+    \envvar{DRAFT_SAMPLE_METHOD} must be exactly \code{probabilistic} or
+    \code{greedy}. Anything else exits 2 here rather than at boot.
+  \item \textbf{Fabric identity.} With \envvar{NCCL_IB_GID_AUTO}=1 (the
+    default), the launcher runs a sysfs resolver on \emph{each} node that
+    mirrors NCCL's own \envvar{NCCL_IB_HCA} selector semantics (prefix
+    vs.\ exact match, port fields parsed the way \code{atoi} would, the
+    32-device cap) and verifies every selected HCA/port exposes a usable
+    RoCEv2/IPv4 GID --- failing closed if any member has none. It deliberately
+    pins nothing: after issue \ghissue{38}-family field reports, a pinned
+    global GID index was found to wedge NCCL init on dual-HCA nodes after
+    link events. Auto mode therefore validates and then leaves
+    \envvar{NCCL_IB_GID_INDEX} unset so NCCL picks per HCA
+    (see \Cref{ch:fabric}).
+  \item \textbf{Presence preflights.} Passwordless ssh to the worker, the
+    pinned image present on \emph{both} nodes, the port free on the head, and
+    no existing containers for the project on either node.
+\end{itemize}
+
+\subsection{Sync, render, preflight, then start --- worker first}
+
+File sync pushes the compose file, the atomically-published env snapshot, the
+DSpark proposer bind-mount source, and roughly twenty hotfix patchers into the
+worker checkout, one \code{scp} per patch, so the worker's entrypoint applies
+byte-identical patches. Then \code{docker compose config --quiet} renders the
+config on the head and (over ssh) on the worker --- validation by rendering,
+catching interpolation errors before any container exists. Every fail-closed
+patcher that supports it (\code{--check} preflights for the Responses store,
+issue \ghissue{117}'s SHM ring recheck, \ghissue{136}, \ghissue{191}, the
+block-$k$ unlock) is then dry-run \emph{worker first, then head}, inside
+throwaway \code{compose run --rm --no-deps} containers. An incompatibility on
+either rank aborts the start while zero services are running.
+
+Only now do the services come up, and the order is a rule with a war story
+behind it: \textbf{worker (rank 1, \code{HEADLESS=1}) first, head (rank 0)
+last}. The head owns the distributed rendezvous --- the TCPStore at
+\envvar{MASTER_ADDR}:\envvar{MASTER_PORT} --- and rank 1 blocks on it while
+loading. Bringing the head up last means the rendezvous is created once,
+consumed once, and never torn down under a peer that is mid-load.
+
+\begin{hbwarstory}
+Issue \ghissue{38}: ``Worker Exited (1) on every start.'' The original launcher
+applied its \code{.sh} hotfixes \emph{after} \code{compose up}, then issued a
+\code{compose restart}/\code{stop} while vLLM was still loading --- tearing down
+the head's TCPStore underneath rank 1 (or hanging the operator on
+``Stopping''). The fix restructured the whole boot: hotfixes moved into the
+compose entrypoint, running \emph{before} \code{exec vllm}, so a start never
+has to bounce a freshly booting pair. The worker-first ordering and the
+``no mid-boot stop'' rule both date from this incident.
+\end{hbwarstory}
+
+\subsection{Health wait, smoke, warmup handoff}
+
+After \code{up -d} on both ranks the launcher polls the authenticated
+\code{/v1/models} endpoint --- up to \envvar{WAIT_ATTEMPTS}=100 tries,
+\envvar{WAIT_SECONDS}=15 apart (about 25 minutes; a first boot with cold JIT
+caches genuinely needs it). Between polls it streams both ranks' container
+logs since the last poll, so the operator watches the load, graph capture, and
+patch banners scroll by instead of staring at a silent prompt. On the first
+200 it prints \code{compose ps} from both ranks, sends one minimal chat
+completion (the smoke request, using the \emph{first} alias in
+\envvar{SERVED_MODEL_NAME}), and finally hands off to
+\repofile{scripts/boot-shape-warmup.sh} (\Cref{sec:ops-warmup}). The handoff
+carries the same bearer token its own probes used, via the environment
+(\envvar{DSPARK_WARMUP_BEARER}), plus the host path of the head's persistent
+Triton cache so the sweep can verify its postcondition. Warmup failure is a
+WARN, never a failed boot.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize]
+  % ---- lane headers -------------------------------------------------------
+  \node[hbhost, text width=2.0cm]  (op) at (0,0)    {Operator};
+  \node[hbbox,  text width=2.9cm]  (ln) at (4.3,0)  {Launcher\\ start-\ldots-dspark.sh};
+  \node[hbgpu,  text width=2.6cm]  (wk) at (8.8,0)  {Worker node\\ (rank 1, headless)};
+  \node[hbgpu,  text width=2.6cm]  (hd) at (13.0,0) {Head node\\ (rank 0)};
+  % ---- lifelines ----------------------------------------------------------
+  \draw[dashed, color=hbSteel!60] (op.south) -- (0,-13.6);
+  \draw[dashed, color=hbSteel!60] (ln.south) -- (4.3,-13.6);
+  \draw[dashed, color=hbSteel!60] (wk.south) -- (8.8,-13.6);
+  \draw[dashed, color=hbSteel!60] (hd.south) -- (13.0,-13.6);
+  % ---- messages / activities ---------------------------------------------
+  \draw[hbflow] (0,-1.0) -- (4.3,-1.0) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {./start \ldots};
+  \node[hbnode, text width=4.3cm] at (4.3,-2.0)
+    {env snapshot: strip BOM/CRLF,\\ 0600 tmp; validate knobs\\ (bad $\rightarrow$ exit 2)};
+  \draw[hbarrow] (4.3,-3.6) -- (8.8,-3.6) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {sysfs RoCEv2 GID audit (fail closed)};
+  \draw[hbarrow] (4.3,-4.3) -- (8.8,-4.3) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {sync: compose, patches, env (atomic 0600)};
+  \node[hbnode, text width=4.3cm] at (4.3,-5.1)
+    {compose \mbox{config --quiet}\\ on head and worker};
+  \draw[hbarrow] (4.3,-5.95) -- (8.8,-5.95) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {patcher --check preflights (worker first)};
+  \draw[hbarrow] (4.3,-6.5) -- (13.0,-6.5) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {patcher --check preflights (head second)};
+  \draw[hbflow] (4.3,-7.3) -- (8.8,-7.3) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {compose up -d};
+  \node[hbgpu, text width=3.6cm] at (8.8,-8.2)
+    {entrypoint hotfixes,\\ exec vllm; waits on\\ head TCPStore};
+  \draw[hbflow] (4.3,-9.55) -- (13.0,-9.55) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {compose up -d (head last)};
+  \node[hbgpu, text width=2.9cm] at (13.0,-10.35)
+    {TCPStore + TP init;\\ load, JIT, capture};
+  \node[hbnode, text width=3.3cm] at (4.3,-10.3)
+    {health poll /v1/models,\\ $\leq$100$\times$15\,s; streams both\\ ranks' startup logs};
+  \draw[hbok] (13.0,-11.35) -- (4.3,-11.35) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {HTTP 200};
+  \draw[hbarrow] (4.3,-12.0) -- (13.0,-12.0) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {smoke chat request, then boot-shape warmup (WARN-only)};
+  \draw[hbok] (4.3,-13.0) -- (0,-13.0) node[hblabel, midway, above, fill=white, inner sep=1.5pt] {exit 0 (3 = already up)};
+\end{tikzpicture}
+\caption{Boot swimlane for the two-node pair. Everything above the first
+\code{up -d} is validation with no side effects on either node; the worker
+always starts before the head so the head's TCPStore rendezvous is created
+last and never torn down under a loading rank~1.}
+\label{fig:ops-boot-swimlane}
+\end{figure}
+
+\subsection{The exit-code contract}
+
+The launcher's exit codes are an API for supervisors, summarized in
+\Cref{tab:ops-exit-codes} and mapped onto observed container state in
+\Cref{fig:ops-split-pair}. The interesting one is 3. Compose runs both ranks
+with \code{restart: unless-stopped} (issue \ghissue{38}), so after a host
+reboot dockerd restores the containers on its own. The launcher's
+existing-container guard used to exit 1 in that situation --- the same code as
+a real failure. Issue \ghissue{72} is what that looked like from the outside:
+a healthy, serving cluster being hammered by its own supervisor. Every
+launcher run found the containers already present and exited 1; systemd's
+\code{Restart=on-failure} unit read the 1 as a failed start and dutifully
+launched another attempt, in a retry storm against a pair that had never
+stopped serving.
+Now a head container that already exists exits \textbf{3} with an explicit
+``this is not a failed start'' hint. Supervisors declare it a success:
+
+\begin{lstlisting}
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+SuccessExitStatus=3
+ExecStart=/opt/dspark/start-deepseek-v4-flash-dspark.sh
+ExecStop=/opt/dspark/stop-deepseek-v4-flash-dspark.sh
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Launcher exit-code contract.}
+\label{tab:ops-exit-codes}
+\begin{tabular}{c>{\raggedright\arraybackslash}p{3.4cm}>{\raggedright\arraybackslash}p{7.6cm}}
+\toprule
+Code & Meaning & Typical causes \\
+\midrule
+0 & pair up, smoke passed & normal start \\
+1 & real failure & missing image/file, ssh unreachable, preflight or patcher failure, \emph{stale worker with head down} \\
+2 & configuration error & bad flag, invalid port/knob/auth combination, ambient-key mismatch \\
+3 & already running & dockerd restored the ranks after a reboot (\code{unless-stopped}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{hbwarning}
+Exit 3 is \emph{not} a health claim. It means only ``a head container for this
+project already exists.'' A head-only reboot can leave the worker serving a
+stale rank --- which is why a leftover \emph{worker} container with the head
+down still exits 1 (``stale rank after a head-only reboot --- rebuild, do not
+treat as success''). After any exit 3, run the status script and a smoke test
+before trusting the pair.
+\end{hbwarning}
+
+\begin{figure}[htbp]
+\centering
+\adjustbox{max width=\textwidth}{%
+\begin{tikzpicture}[font=\small]
+  % ---- axis note ----------------------------------------------------------
+  \node[hblabel, anchor=west] at (-9.5,3.9)
+    {observed container state when the launcher runs};
+  % ---- column headers (worker axis) ---------------------------------------
+  \node[hbtitle, align=center, text width=3.4cm] (colA) at (0,2.5)
+    {worker container\\ absent};
+  \node[hbtitle, align=center, text width=3.4cm] (colB) at (6.5,2.5)
+    {worker container\\ present};
+  % ---- row headers (head axis) --------------------------------------------
+  \node[hbtitle, align=center, text width=2.2cm] (rowA) at (-4.7,0)
+    {head container\\ present};
+  \node[hbtitle, align=center, text width=2.2cm] (rowB) at (-4.7,-5.0)
+    {head container\\ absent};
+  % ---- the four cells -----------------------------------------------------
+  \node[hbwarn, text width=5.4cm, minimum height=32mm] (tl) at (0,0)
+    {\textbf{worker-only event}\\[3pt]
+     the head is up, the TP group is not:\\ the head answers alone};
+  \node[hbpatch, text width=5.4cm, minimum height=32mm] (tr) at (6.5,0)
+    {exit 3 --- already running\\ (dockerd restored the ranks)\\[3pt]
+     \textcolor{amber!80!black}{\rule{5.0cm}{0.4pt}}\\[3pt]
+     \scriptsize exit 3 is NOT a health claim ---\\ run status + smoke\\[4pt]
+     \textcolor{brandgray}{\rule{5.0cm}{0.3pt}}\\[3pt]
+     \color{brandgray}\#72: exit 1 here caused a\\ supervisor retry storm};
+  \node[hbgpu, text width=5.4cm, minimum height=32mm] (bl) at (0,-5.0)
+    {\textbf{normal start}\\[3pt]
+     worker first, then head last\\[3pt]
+     exit 0 --- pair up, smoke passed};
+  \node[hbwarn, text width=5.4cm, minimum height=32mm] (br) at (6.5,-5.0)
+    {\textbf{head-only reboot}\\[3pt]
+     exit 1 --- stale worker with head down:\\ rebuild, do not treat as success};
+  % ---- cause rail: one policy, three of the four outcomes ------------------
+  \node[hbnode, text width=2.6cm, minimum height=36mm] (rail) at (-8.3,-2.5)
+    {\texttt{restart:}\\ \texttt{unless-stopped}\\[3pt] (\#38)};
+  \draw[color=teal, thick] (rail.east) -- (7.8,-2.5);
+  \draw[hbarrow, color=teal] (-1.0,-2.5) -- (-1.0,-1.6);
+  \draw[hbarrow, color=teal] (5.2,-2.5) -- (5.2,-1.6);
+  \draw[hbarrow, color=teal] (7.8,-2.5) -- (7.8,-3.4);
+  % ---- one remedy serving both hazards ------------------------------------
+  \node[hbnode, text width=2.4cm] (fix) at (11.8,-2.5)
+    {one remedy for both:\\ full stop $\rightarrow$ start,\\ both ranks recreated};
+  \draw[hbfail] (-2.4,1.6) -- (-2.4,3.3) -| (fix.north);
+  \draw[hbfail] (br.east) to[out=0,in=-90] (fix.south);
+  % ---- action rail: exactly one supervisor --------------------------------
+  \node[hbbox, text width=4.6cm] (actA) at (-1.2,-8.2)
+    {dockerd owns resurrection:\\[2pt] \texttt{SuccessExitStatus=3}};
+  \node[hbbox, text width=4.6cm] (actB) at (4.6,-8.2)
+    {a systemd unit owns start/stop:\\[2pt] \texttt{DSPARK\_RESTART\_POLICY=no}};
+  \node[hbnode, text width=4.6cm] (actC) at (10.4,-8.2)
+    {{\bfseries\color{navy} exactly one supervisor in charge}};
+  \draw[color=brandgray!60] (1.70,-7.6) -- (1.70,-8.8);
+  \draw[color=brandgray!60] (7.50,-7.6) -- (7.50,-8.8);
+\end{tikzpicture}%
+}
+\caption{The split-pair state space that \code{restart: unless-stopped}
+(issue \ghissue{38}) creates. The same policy that makes a reboot self-healing
+produces two mirrored hazards: after a head-only reboot the worker keeps
+serving a stale rank, after a worker-only event the head answers alone. The
+launcher reports container \emph{presence}, not TP-group health --- exit 3
+means only that a head container exists, and a leftover worker with the head
+down is still exit 1. Either dockerd owns resurrection and systemd learns
+\code{SuccessExitStatus=3}, or systemd owns start/stop and
+\envvar{DSPARK_RESTART_POLICY}=\code{no}; never both.}
+\label{fig:ops-split-pair}
+\end{figure}
+
+\section{Stopping and status}
+\label{sec:ops-stop-status}
+
+That warning names the rest of the pair's lifecycle tooling: a stop that is
+prompt and certain, and a status that examines both ranks before saying
+anything. If you remember one thing from this chapter, make it this: no
+operational act on this pair is finished until both ranks have been made to
+answer for it. A stop that could not reach the worker has not stopped
+anything, and a status read from the head's compose output has not checked
+the pair.
+
+\subsection{What stop tears down --- and what it refuses to claim}
+
+\repofile{stop-deepseek-v4-flash-dspark.sh} inverts the start: it must reach
+both nodes, and its design thesis (stated in its header) is that \emph{a stop
+that cannot reach the worker must not report success} --- because the worker's
+\code{restart: unless-stopped} policy will resurrect the stale rank on that
+node's next boot. Reachability probes run first; an unreachable worker degrades
+to a warning, is counted, and forces exit 1 at the end with an explicit
+``the worker may still be serving a stale rank --- re-run once reachable.''
+
+Teardown itself is careful in three ways. First, it sweeps \emph{two} project
+names --- the current one and a legacy name derived from older checkout
+directories --- so resources created by earlier versions of the recipe are not
+orphaned. Second, on each node it \code{docker rm -f}'s the vLLM container
+\emph{before} \code{compose down}: compose alone can wait out
+\code{stop_grace_period}, and the point of a stop is to be prompt and
+certain. (The grace period itself, \envvar{DSPARK_STOP_GRACE}, defaults to
+10\,s; the docs warn that 180\,s hangs the stop.) Third, remote invocations scrub
+\code{MASTER_ADDR}/\code{MASTER_PORT}/\code{NODE_RANK}/\code{HEADLESS} from the
+ssh environment before setting them explicitly, so a stray cluster variable in
+the worker's shell can never leak into compose.
+
+The \code{--nfs} flag is the deliberate asymmetry. A default stop leaves the
+NFS weight share running --- weights survive restarts, and the next start
+reuses them. \code{--nfs} is the full dismantle: it stops the
+\code{dspark-nfs} exporter container \emph{only if DSpark owns it} (it never
+touches \code{vllm-fn-nfs}, the neighboring Qwen recipe's exporter on the same
+hosts) and removes the \code{dspark-hf} client volume on each reachable
+worker. Unknown flags exit 2.
+
+\subsection{Status probes both ranks; smoke exercises all six slots}
+
+\repofile{status-deepseek-v4-flash-dspark.sh} is a report, not a gate: every
+probe is \code{|| true} and it exits 0 unless the auth configuration itself is
+invalid (exit 2). What makes it useful is that it refuses to look at only one
+node: it runs \code{compose ps} on head and worker (and a third node when
+configured), lists matching containers by name pattern on all nodes, compares
+the image ID of \envvar{DSPARK_VLLM_IMAGE} on every node (catching image drift
+between ranks), checks the listening port, and finally curls
+\code{/v1/models} with authentication. That per-rank sweep is precisely what
+catches the classic split-brain where the head's compose output looks clean
+while the worker still runs a stale rank.
+
+\repofile{smoke-deepseek-v4-flash-dspark.sh} then proves the pair actually
+generates. It launches \envvar{CONCURRENCY}=6 parallel requests --- matched to
+\code{max_num_seqs=6}, so one command exercises every slot --- each a
+deterministic, uniquely numbered prompt:
+
+\begin{lstlisting}[language=jsonhb]
+{"model": "<first word of SERVED_MODEL_NAME>",
+ "messages": [{"role": "user",
+               "content": "Reply with OK and the number <i>."}],
+ "temperature": 0.0}
+\end{lstlisting}
+
+Verification is deliberately transport-level: every curl must succeed within
+180\,s and every response body must contain \code{"choices"}; nothing asserts
+the literal text ``OK $i$'', keeping the gate robust to model phrasing. Any
+failure exits 1, leaving the response bodies in a temp directory for
+inspection until the script exits.
+
+\subsubsection{The shared auth block}
+
+Start, status, and smoke embed a byte-identical \envvar{DSPARK_API_KEYS}
+handling block, and the CPU test suite enforces that they stay identical. It
+rejects embedded CR/LF/VT/FF and backslashes (exit 2), and rejects any key
+token beginning with \code{-} (a curl argument-injection guard, with a
+diagnostic that never echoes token bytes). Crucially, it exits 2 when
+\emph{both} \envvar{VLLM_API_KEY} and \envvar{DSPARK_API_KEYS} are set,
+matching the server entrypoint's own refusal ``so a probe never guesses
+which variable the server honoured.'' In multi-key mode the probes authenticate with the
+\emph{first} parsed key; without that, a health poll against a keyed server
+would never see a 200 and would silently wait out its entire timeout on a
+cluster that is actually serving.
+
+\section{Weights management}
+\label{sec:ops-weights}
+
+A pair that stops cleanly still has to come back with the same 157\,GiB of
+weights it left with. That is the job of
+\repofile{prepare-dspark-model-cache.sh}, which populates the HF cache with
+the Vision-Exp weights on the head, verifies the snapshot, then repeats on
+the worker --- unless NFS mode makes the worker a client of the head's cache.
+Everything the script does serves one question a future operator has to be
+able to answer offline: which bytes is this node about to load? The revision
+pin, the \code{refs/main} rewrite, the write-back into
+\repofile{.env.dspark}, and the offline verify pass are four ways of keeping
+that answer recorded rather than inferred.
+
+The script's most consequential behavior is invisible on a good day, and it
+exists because of issue \ghissue{19}. Official downloads default to the
+tested pin \code{86f746b36186f0e567729a5c06a8c918caba82a9}, with a
+deliberate set-vs-empty distinction: an \emph{explicitly set}
+\envvar{DSPARK_REVISION} --- even empty, meaning ``follow tip of main'' ---
+is respected. After a pinned download the script rewrites the cached repository's
+\code{refs/main} to point at the pinned commit, so a later fully-offline
+serve that resolves the bare repo id still finds the pinned snapshot.
+\repofile{validate-dspark-config.sh} guards the companion footgun from the
+other side: if a revision is pinned but absent from the cache while
+\emph{other} snapshots exist, it prints a loud warning that starting would
+silently begin a ${\approx}155$\,GB download. The remedy: either pin the
+cached sha on both nodes, or run prepare deliberately.
+
+Which checkpoint gets those bytes is decided once and recorded.
+\code{--official} and \code{--abliterated} choose between the official
+checkpoint and the Keys-abliterated variant; \code{--yes} is the
+non-interactive path (using \envvar{ABLITERATED} from the env file); an
+interactive TTY gets a 0/1 prompt. Whatever is chosen is written back into
+\repofile{.env.dspark} via an upsert, so serve and validate always agree
+with what was actually downloaded. The worker-side recursion never
+prompts --- it trusts the environment handed to it by the head.
+
+Authentication is handled with the env file's travel in mind. Before
+sourcing the file, prepare snapshots \envvar{HF_TOKEN} /
+\envvar{HUGGING_FACE_HUB_TOKEN} from the calling shell, so an empty
+\code{HF_TOKEN=} line in the file cannot wipe an exported token. Precedence
+runs shell token, then env file, then the on-disk token files from
+\code{huggingface-cli login}. The docs recommend the shell route for a
+specific reason: \repofile{.env.dspark} is \code{scp}'d to the worker, so a
+token stored there is replicated to another host. The token is never
+printed (only its \emph{source} is logged), and multi-line tokens are
+rejected outright.
+
+Network access, finally, is a scoped exception rather than a mode. The
+download step runs inside the serving image with \envvar{HF_HUB_OFFLINE}=0
+forced \emph{for that run only} --- serving can keep
+\envvar{HF_HUB_OFFLINE}=1 permanently. Hub download/etag timeouts are
+raised to 120/30\,s so a slow CDN does not abort a 157\,GiB transfer, and
+\envvar{HF_DOWNLOAD_WORKERS} defaults to 1. The verify step then re-runs
+\code{snapshot_download} with \code{local_files_only=True} and offline
+forced, reads the safetensors index, and fails listing missing shards ---
+a truncated download is caught at prepare time, not at boot.
+
+With \envvar{DSPARK_WORKER_HF_NFS}=1, prepare stops after the head: the
+worker will mount the head's cache over NFSv4 on the ConnectX link at
+start, and no second hub download happens. The abliterated variant rides
+the same cache nearly for free --- \repofile{scripts/overlay-vision-exp-ablit-cache.py}
+hardlinks every blob the two snapshots share and copies only the 26 shards
+the abliteration actually edits. The mechanism is covered with the rest of
+weights logistics at scale in \Cref{sec:scale-ablit-overlay}.
+
+\section{JIT cache doctrine}
+\label{sec:ops-jit}
+
+Weights are not the only bytes the pair must carry across restarts. This
+stack JIT-compiles aggressively at runtime: Triton kernels, TileLang
+kernels, the B12X MoE backend's CuTeDSL kernels, FlashInfer's autotuned
+tactics, and DeepGEMM's indexer-logits cubins. The doctrine that grew out of
+issues \ghissue{65} and \ghissue{117} is simple: \textbf{every JIT product
+must live on the persistent HF volume, not inside the container image}.
+\Cref{tab:ops-jit-caches} lists the wiring.
+
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Persisted JIT caches and forensic paths (compose defaults).}
+\label{tab:ops-jit-caches}
+\begin{tabular}{ll>{\raggedright\arraybackslash}p{4.8cm}}
+\toprule
+Variable & Location (under HF volume) & Why persisted \\
+\midrule
+\envvar{TRITON_CACHE_DIR} & \repofile{triton-cache/} & \ghissue{117}: in-image cache dies on recreate \\
+\envvar{TILELANG_CACHE_DIR} & \repofile{tilelang-cache/} & \ghissue{65}: same failure, first observed \\
+\envvar{B12X_CUTE_COMPILE_CACHE_DIR} & \repofile{b12x-cute-cache/} & \ghissue{117} family: MoE kernel re-JIT \\
+FlashInfer autotune/workspace & vLLM cache root & tactic cache persists per config hash \\
+\envvar{TORCH_FR_DUMP_TEMP_FILE} & \repofile{nccl-fr/} & flight-recorder dumps survive a killed pair \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The mechanism that made this a stability issue rather than a latency nit is
+worth spelling out. The in-image caches (\repofile{~/.triton/cache},
+\repofile{~/.tilelang/cache}, \repofile{~/.cache/b12x/cute_compile}) die on
+every container \emph{recreate}, so after every restart, already-known shapes
+re-compiled the first time live traffic touched them. A mid-serve JIT is a
+latency spike on a single-GPU server; on a TP=2 pair it is a hazard. While
+one rank sits in the compiler, its peer waits inside a collective, and
+torch's ProcessGroupNCCL watchdog --- 600\,s, a deadline that
+\envvar{VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS} does \emph{not} extend --- kills
+the pair. The field incident in \ghissue{117} recorded exactly this chain
+starting from \code{_prepare_dflash_inputs_kernel}. Persisting the caches
+means each shape is compiled once per image, not once per boot.
+
+Two related settings complete the doctrine. Compose pins
+\envvar{VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}=1800 (stock vLLM: 300), because
+issues \ghissue{65}/\ghissue{87} showed mid-serve CuTeDSL/TileLang compilation
+legitimately exceeding 300\,s and killing the EngineCore. And the vendored
+DeepGEMM ships only \code{sm120_*} headers while emitting \code{sm121_*}
+indexer-logits kernels on GB10. Production survives on persisted JIT cache
+entries, and a cache miss \emph{fails to compile}; the opt-in
+\envvar{DSPARK_ENABLE_DEEPGEMM_SM121_ALIAS}=1 writes alias headers so a cold
+cache can rebuild. A persisted cache hiding a broken compiler underneath it is
+a failure mode to know about before deleting cache directories casually.
+
+\section{Boot-shape warmup}
+\label{sec:ops-warmup}
+
+Persisting caches fixes re-JIT after restarts; it does nothing for shapes that
+have never been compiled at all. \repofile{scripts/boot-shape-warmup.sh},
+launched by the launcher after the smoke request
+(\envvar{DSPARK_BOOT_SHAPE_WARMUP}=1 by default), exists to burn every
+enumerable compile key before real traffic arrives.
+
+The sweep's design rests on one insight about what a compile key actually
+contains. The kernel that caused the \ghissue{117}
+incident, \code{_prepare_dflash_inputs_kernel}, is keyed on
+\code{BLOCK_SIZE = min(256, next_pow2(scheduled_tokens + 6))} --- the $+6$
+being $1+{}$\code{num_speculative_tokens} at the deployed $k{=}5$ (the audit
+notes the ladder must be re-derived as $+7$ when running $k{=}6$). Request
+\emph{concurrency does not enter the key at all}, and every ordinary chat
+prompt --- even the long-prefill tail --- lands in BLOCK 256. So a load test at
+high concurrency warms almost nothing: the six live keys
+$\{8,16,32,64,128,256\}$ are reachable only through \emph{exact}
+scheduled-token counts. The sweep therefore fires a deterministic ladder of
+plain \code{/v1/completions} whose prompts encode exactly
+$s \in \{1, 6, 20, 45, 100, 200\}$ tokens, mapping via
+\code{next_pow2(s+6)} onto all six keys (\Cref{fig:ops-warmup-ladder}). And it never trusts its own
+prompt-building heuristic: each rung is verified with an authenticated
+\code{POST /tokenize} \emph{before} the completion may fire, and a count
+mismatch skips only that rung with a precise, secret-free diagnostic
+(``\code{/tokenize} reported 46 tokens, need exactly 45 --- rung skipped,
+BLOCK 64 NOT warmed'').
+
+\begin{figure}[htbp]
+\centering
+\adjustbox{max width=\textwidth}{%
+\begin{tikzpicture}[font=\small]
+  % ---- the compile key ----------------------------------------------------
+  \node[hbbox, align=center] (banner) at (3.2,2.9)
+    {\texttt{BLOCK\_SIZE = min(256, next\_pow2(scheduled\_tokens + 6))}};
+  % ---- column captions ----------------------------------------------------
+  \node[hbtitle, align=center, text width=2.6cm] (cap1) at (0,1.55)
+    {prompt tokens s};
+  \node[hbtitle, align=center, text width=2.2cm] (cap2) at (3.2,1.55)
+    {s + 6};
+  \node[hbtitle, align=center, text width=2.8cm] (cap3) at (6.4,1.55)
+    {next\_pow2,\\ clamped at 256};
+  % ---- the six rungs ------------------------------------------------------
+  \foreach \i/\sv/\pv/\kv/\st in {%
+      1/1/7/8/hbbox, 2/6/12/16/hbbox, 3/20/26/32/hbbox,
+      4/45/51/64/hbbox, 5/100/106/128/hbbox, 6/200/206/256/hbpatch} {
+    \node[hbnode, minimum width=15mm, minimum height=6.5mm]
+      (a\i) at (0,{0.9-0.9*\i}) {\sv};
+    \node[hbnode, minimum width=15mm, minimum height=6.5mm]
+      (b\i) at (3.2,{0.9-0.9*\i}) {\pv};
+    \node[\st, minimum width=15mm, minimum height=6.5mm]
+      (c\i) at (6.4,{0.9-0.9*\i}) {\kv};
+    \draw[hbarrow, color=teal] (a\i.east) -- (b\i.west);
+    \draw[hbarrow, color=teal] (b\i.east) -- (c\i.west);
+  }
+  % ---- the +6 derivation --------------------------------------------------
+  \node[hbpatch, text width=4.0cm] (annot) at (10.4,-1.0)
+    {+6 = 1 + num\_speculative\_tokens (k=5); re-derive as +7 at k=6};
+  \draw[hbarrow, color=amber!80!black, thin] (annot.north) -- ++(0,0.85) -| (b1.north);
+  % ---- the /tokenize gate in front of every rung --------------------------
+  \node[hbbox, text width=2.6cm, minimum height=30mm] (gate) at (-3.6,-1.8)
+    {\texttt{POST /tokenize} verifies each rung before the completion fires};
+  \draw[color=teal, thick] (gate.east) -- (-1.35,-1.8);
+  \draw[color=teal, thick] (-1.35,0.325) -- (-1.35,-4.825);
+  \foreach \i in {1,...,6} {
+    \draw[hbarrow, color=teal] (-1.35,{0.9-0.9*\i}) -- (a\i.west);
+  }
+  \node[hbwarn, text width=3.2cm] (skip) at (-3.6,-5.6)
+    {``\texttt{/tokenize} reported 46 tokens, need exactly 45 --- rung skipped,
+     BLOCK 64 NOT warmed''};
+  \draw[hbfail] (gate.south) -- (skip.north)
+    node[hblabel, midway, left] {count mismatch};
+  % ---- what the ladder evaluates to ---------------------------------------
+  \node[hbfaint, text width=6.4cm, align=left] (sum) at (2.4,-6.0)
+    {\texttt{s = 1, 6, 20, 45, 100, 200}\\
+     \texttt{s+6 = 7, 12, 26, 51, 106, 206}\\
+     \texttt{BLOCK = 8, 16, 32, 64, 128, 256}};
+  % ---- saturation lane ----------------------------------------------------
+  \node[hbpatch, text width=2.2cm] (sat) at (6.4,-7.9) {BLOCK 256};
+  \draw[color=brandgray!60, thin, dashed] (c6.south) -- (sat.north);
+  \foreach \yy in {-6.9,-7.15,...,-8.9} {
+    \draw[color=brandgray!55, thin, -{Stealth[length=1.6mm]}] (-4.2,\yy) -- (sat.west);
+  }
+  \node[hbpatch, text width=4.6cm, align=left] (verdict) at (10.8,-7.9)
+    {every ordinary chat prompt lands in BLOCK 256\\[2pt]
+     request concurrency does not enter the key at all};
+  \draw[hbarrow, color=amber!80!black, thin] (sat.east) -- (verdict.west);
+  % ---- accounting footer --------------------------------------------------
+  \node[hbnode, text width=4.6cm] (badge) at (1.4,-10.0)
+    {47 requests at \texttt{MAX\_NUM\_SEQS}=6};
+  \node[hbnode, text width=4.6cm] (contract) at (8.6,-10.0)
+    {{\bfseries\color{navy} WARN, never a boot failure}};
+  \draw[color=brandgray!60] (5.0,-9.5) -- (5.0,-10.5);
+\end{tikzpicture}%
+}
+\caption{Warming by compile key rather than by load.
+\code{_prepare_dflash_inputs_kernel} is keyed on
+\code{min(256, next_pow2(scheduled_tokens + 6))}, so the six live keys are
+reachable only through the exact token counts 1, 6, 20, 45, 100 and 200 ---
+and every ordinary chat prompt, long-prefill tail included, collapses onto
+BLOCK 256. Concurrency never enters the key, which is why a high-concurrency
+load test warms almost nothing. Each rung is verified with an authenticated
+\code{POST /tokenize} before its completion may fire, and a count mismatch
+skips exactly that rung with a secret-free diagnostic.}
+\label{fig:ops-warmup-ladder}
+\end{figure}
+
+Beyond the ladder, the batch-keyed kernels are covered by chat arms at
+C=1/2/4/6 (capped at the launcher-resolved \envvar{MAX_NUM_SEQS}),
+serve-default arms that deliberately omit \code{max_tokens} and template
+overrides (those defaults have distinct Triton variants), a medium and a
+chunk-boundary-crossing prefill, and one
+thinking-off arm. The sampler arms joined
+later, and their origin deserves telling in full.
+
+\begin{hbwarstory}
+On 2026-08-24 the sweep's own blind spot compiled itself into evidence.
+Every warmup arm to that date ran greedy, so \code{_topk_topp_kernel} ---
+dispatched only when a request carries \code{top_k}/\code{top_p} --- had
+never been warmed; the first sampled request to arrive JIT'd it mid-serve.
+The forensic proof sat in the persistent Triton cache itself:
+entries for the kernel born at 15:26 and 15:27 UTC on a box that was
+serving at the time. The fix added the sampler arms. The enumerable key
+axes are the \code{TOPK_ENABLED}$\times$\code{TOPP_ENABLED} constexpr
+pair, so three combos (k-only, p-only, k+p) now run at temperature 0.8 ---
+greedy would drop the tensors --- plus a C=3 redundancy burst.
+\end{hbwarstory}
+
+Request success alone cannot prove every
+sampling branch dispatched, so the sweep inspects the persistent Triton cache
+for \code{_topk_topp_kernel} TTIR entries and classifies each by argument
+use: a disabled side's symbol appears once, in the declaration; an enabled
+side is referenced again in the body. (A boundary guard ensures the short
+register name \code{P} cannot false-match the decoy
+\code{PERCENTILE_TO_STD_TABLE}.)
+It is honest about scope: it sees only the
+head rank's cache, ``a dispatch-shape proxy, not a worker-filesystem
+attestation.''
+
+The accounting is equally honest. Result files are pre-created
+before subshells fork, so a request whose subshell dies still tallies as a
+failed outcome --- the summary can never claim $n/n$ over fewer outcomes than
+were scheduled (47 requests at the shipped \envvar{MAX_NUM_SEQS}=6). And by
+contract the whole sweep is a WARN, never a boot failure: the cost of a missed
+shape is a mid-serve JIT --- exactly the status quo the script exists to
+reduce --- not an outage.
+
+\section{Incident response}
+\label{sec:ops-incident}
+
+Everything in this chapter so far exists to prevent incidents; the rest of
+it is for the day one happens anyway.
+
+\subsection{The flight recorder: evidence before restart}
+
+Before 2026-08-25, every pair-loss incident ended with zero collective-level
+evidence: the stalled rank logs nothing, the peer spins, and after the restart
+only coarse metrics remain. Compose now pins PyTorch's ProcessGroupNCCL flight
+recorder explicitly on (\envvar{TORCH_FR_BUFFER_SIZE}=2000,
+\envvar{TORCH_NCCL_DUMP_ON_TIMEOUT}=1,
+\envvar{TORCH_NCCL_ENABLE_MONITORING}=1), persists dumps on the HF volume
+(\envvar{TORCH_FR_DUMP_TEMP_FILE} $\rightarrow$
+\repofile{/cache/huggingface/nccl-fr/comm_lib_trace_rank_}, rank id appended),
+and exposes torch's named-pipe trigger
+(\envvar{TORCH_NCCL_DEBUG_INFO_PIPE_FILE}, stem
+\repofile{/tmp/fr_dump_pipe_}). The stem lives on \code{/tmp} because torch
+\code{TORCH_CHECK}s the mkfifo at process-group init --- it must never depend
+on a volume directory that might not exist. And in this stack \code{/tmp}
+is the \envvar{DSPARK_TMP_HOST} bind mount, so the FIFO is host-visible
+(root-owned; poke via \code{docker exec} or as root).
+
+A watchdog-triggered 600\,s kill now dumps automatically. For a pair that is
+frozen but \emph{not} timed out, the operator (or an \ghissue{87}-style
+external watchdog) pokes the pipe:
+
+\needspace{5\baselineskip}
+\begin{lstlisting}[language=bash]
+# on each rank (both nodes):
+docker exec <container> sh -c 'echo 1 > /tmp/fr_dump_pipe_<rank>.pipe'
+# wait for: "Finished writing Flight Recorder debug info"
+# (or the dump file's size to settle), THEN:
+mkdir fr-incident-$(date +%s)
+scp head:.../nccl-fr/comm_lib_trace_rank_0  fr-incident-*/
+scp worker:.../nccl-fr/comm_lib_trace_rank_1 fr-incident-*/
+# analyze offline: torchfrtrace over the complete rank set
+\end{lstlisting}
+
+Two operator rules are part of the contract. First, a poke is asynchronous and
+best-effort --- torch launches the dump via \code{std::async} and never
+waits --- so an immediate restart can kill the writer mid-dump and leave a
+truncated file. Wait for the log line or a bounded size-settle check. Second,
+dump filenames are \emph{static per rank} and torch truncates on every dump,
+so preservation is the operator's job: archive both ranks'
+\code{comm_lib_trace_rank_*} files together, into one directory, after every
+dump. \code{torchfrtrace} needs the complete rank set, and each node's
+volume holds only its own rank's file.
+
+\subsection{The frozen-pair decision tree}
+
+\Cref{fig:ops-frozen-flow} is the runbook when the pair looks wrong. The
+ordering matters: evidence is collected \emph{before} the restart destroys it,
+and both ranks are always examined, because the head can answer
+\code{/health} while the worker is wedged. One diagnostic deserves emphasis: a
+stream that ends \emph{without} a \code{finish_reason} is the recorded
+signature of the \ghissue{141} stochastic sparse-MLA stall family --- silent
+truncation, not a client bug. That is the branch that should send you to
+the flight-recorder poke rather than to a shrug.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 7mm, font=\scriptsize]
+  \node[hbwarn, text width=5.6cm] (start)
+    {Pair looks frozen or unhealthy\\ (no tokens, hung clients, watchdog noise in logs)};
+  \node[hbbox, text width=5.6cm, below=of start] (health)
+    {GET /health on the head returns 200?};
+  \node[hbnode, text width=5.2cm, right=of health] (ranks)
+    {Probe BOTH ranks: status script, docker ps, per-rank logs. Stale worker after a head-only reboot? $\rightarrow$ stop, then start};
+  \node[hbbox, text width=5.6cm, below=14mm of health] (gen)
+    {Short temperature-0 generation completes?};
+  \node[hbnode, text width=5.2cm, right=of gen] (fine)
+    {Server is generating. Check client path and network; watch jit\_monitor for mid-serve JIT warnings};
+  \node[hbbox, text width=5.6cm, below=14mm of gen] (finish)
+    {finish\_reason present on completed streams?};
+  \node[hbnode, text width=5.2cm, right=of finish] (i141)
+    {Missing finish\_reason = silent-truncation signature (issue \#141 family) --- treat as engine evidence, not a client bug};
+  \node[hbnode, text width=5.6cm, below=of finish] (poke)
+    {Poke the flight-recorder FIFO on BOTH ranks:\\ write to \texttt{/tmp/fr\_dump\_pipe\_<rank>.pipe}};
+  \node[hbnode, text width=5.6cm, below=of poke] (wait)
+    {Wait for ``Finished writing Flight Recorder debug info''\\ (or bounded dump-size settle) --- a poke is async, best-effort};
+  \node[hbnode, text width=5.6cm, below=of wait] (arch)
+    {Archive comm\_lib\_trace\_rank\_* from BOTH nodes into one directory (filenames are static; next dump truncates)};
+  \node[hbgpu, text width=5.6cm, below=of arch] (restart)
+    {stop $\rightarrow$ start (recreate both ranks);\\ analyze offline with torchfrtrace};
+  \draw[hbarrow] (start) -- (health);
+  \draw[hbfail] (health) -- (ranks) node[hblabel, midway, above] {no};
+  \draw[hbarrow] (health) -- (gen) node[hblabel, midway, right] {yes};
+  \draw[hbok] (gen) -- (fine) node[hblabel, midway, above] {yes};
+  \draw[hbarrow] (gen) -- (finish) node[hblabel, midway, right] {no / hangs};
+  \draw[hbfail] (finish) -- (i141) node[hblabel, midway, above] {no};
+  \draw[hbarrow] (finish) -- (poke) node[hblabel, midway, left, align=right] {either way:\\collect evidence};
+  \draw[hbarrow] (i141.south) |- (poke.east);
+  \draw[hbarrow] (poke) -- (wait);
+  \draw[hbarrow] (wait) -- (arch);
+  \draw[hbarrow] (arch) -- (restart);
+\end{tikzpicture}
+\caption{Frozen-pair decision tree. Evidence is captured before the restart
+destroys it; both ranks are always examined; a missing \code{finish_reason} on
+an apparently completed stream is engine evidence (issue \ghissue{141}), not a
+client anomaly.}
+\label{fig:ops-frozen-flow}
+\end{figure}
+
+\subsection{Host and policy footguns}
+
+Three standing rules round out incident prevention:
+
+\textbf{Disable earlyoom on both hosts.} The README is blunt: earlyoom can
+kill vLLM under deep-context load. On a unified-memory SoC where the KV pool
+and host pages compete (see the audit's host-memory finding in
+\Cref{ch:perf}), an eager userspace OOM killer is aimed straight at the
+largest process on the box --- the serving rank.
+
+\textbf{The healthcheck must probe what vLLM binds (\ghissue{185}).} With
+\code{network_mode: host}, vLLM binds exactly \code{--host $VLLM_HOST}. The
+compose healthcheck used to probe a hardcoded \code{127.0.0.1}, so a LAN-IP
+bind left \code{/health} off loopback and Docker reported a permanently
+\code{unhealthy} container while the API served. The healthcheck now probes
+\envvar{VLLM_HOST} (wildcards still map to loopback). Because compose
+bakes the value into the healthcheck at config time, the fix requires a
+\emph{recreate} (\code{stop} then \code{start}); a container restart keeps the
+old probe.
+
+\textbf{Restart policy is a contract with your supervisor.} The default
+\code{restart: unless-stopped} (\ghissue{38}) is what makes reboots
+self-healing --- and what creates both the exit-3 behavior (\ghissue{72}) and
+the split-pair hazard. After a \emph{head-only} reboot, dockerd restores the
+head but the worker keeps running its old rank; after a \emph{worker-only}
+event, the reverse. If a systemd unit owns start/stop, set
+\envvar{DSPARK_RESTART_POLICY}=\code{no} so exactly one supervisor is in
+charge; if dockerd owns resurrection, teach systemd
+\code{SuccessExitStatus=3} and treat exit 3 as ``verify, then trust.''
+
+\section{Config hygiene}
+\label{sec:ops-hygiene}
+
+The footguns above live at the host and policy layer; the last set lives
+inside \repofile{.env.dspark} itself.
+
+\subsection{Numeric knobs as untrusted input}
+
+Three integers from \repofile{.env.dspark} ---
+\envvar{MAX_NUM_SEQS}, \envvar{MTP_NUM_TOKENS},
+\envvar{MAX_NUM_BATCHED_TOKENS} --- are interpolated into bash arithmetic on
+the head \emph{and} forwarded unevaluated into the container's own
+\code{$(( ))} via compose. \repofile{dspark-numeric-knobs.sh} therefore
+treats them the way web code treats user input to SQL: a
+\code{^[0-9]+$} regex first (no signs, spaces, hex, floats); then a
+\emph{length} guard --- more than 10 digits is rejected \emph{without
+evaluating it}, because a huge decimal can wrap 64-bit arithmetic and slip
+through a bound check as a negative; then normalization through
+\code{10#$val} so a leading zero is never read as octal; then generous range
+checks (1--4096, 0--64, 1--8{,}388{,}608) that exist purely to bound the
+arithmetic. Finally, in launcher mode, the normalized value is sed-rewritten
+into the private env snapshot --- exported variables do not cross ssh, so this
+rewrite is what guarantees head and worker compute with the same decimal.
+Issue \ghissue{105} is the companion fix on the consumer side: the \ghissue{27}
+scheduler hotfix used to \code{int()} the in-flight-prefill cap inside every
+admission iteration, so a malformed value crashed only when traffic arrived.
+It now parses once at construction and falls back with a single warning.
+
+\begin{hblesson}
+Environment variables that reach \code{$(( ))} --- or any evaluator --- are
+input, not configuration. Validate with a regex, bound the \emph{length}
+before the value, force the base, normalize once, and ship the normalized form
+to every consumer. The 10-digit guard exists because the overflow you did not
+evaluate cannot wrap past your range check.
+\end{hblesson}
+
+\subsection{The auth contract}
+
+The mutual exclusion between \envvar{VLLM_API_KEY} (single key, vLLM's native
+alias) and \envvar{DSPARK_API_KEYS} (multi-key, flattened into exactly one
+\code{--api-key} flag --- last-wins, so a per-key loop would silently leave
+only the last key valid) is enforced identically in four places. The server
+entrypoint and the start/smoke/status scripts all exit 2 and name both
+variables. Keyed starts additionally require the
+startup-log redaction hotfix to apply and verify before \code{exec vllm} ---
+upstream logs every \code{--api-key} value verbatim otherwise. This gate
+sits outside the skippable performance-hotfix loop, so
+\envvar{DSPARK_SKIP_HOTFIX}=1 can never expose keys. Keys live in container
+argv, so rotation requires a stop/start, and vLLM offers revocation, not
+per-key attribution.
+
+\begin{hbnote}
+A keyed deployment is not a fenced deployment. On the pinned runtime, every
+route outside \code{/v1}, \code{/v2}, and \code{/inference} is keyless ---
+including the compute-capable \code{POST /invocations} and
+\code{POST /generative_scoring}, plus \code{/tokenize}, \code{/detokenize},
+\code{/health}, \code{/metrics}, \code{/version}, and \code{/ping}. Network-level
+access control on the server port remains required regardless of API keys.
+\end{hbnote}
+
+\subsection{Variables the launcher owns}
+
+Two variables look settable and are not. \envvar{DSPARK_MODEL} is
+\emph{derived} --- \envvar{ABLITERATED}=0/1 selects between the official and
+abliterated checkpoint ids, and prepare writes the flag back so downloads and
+serves agree. Setting the model id by hand bypasses that agreement and the
+revision-pinning logic with it. \envvar{GPU_MEMORY_UTILIZATION} is likewise
+overridden unconditionally from \envvar{GPU_MEMORY_UTILIZATION_TEXT}
+(default 0.835) ``so the profile stays in one place'': an explicit value in
+the env file is silently ignored. Tuning either means tuning its upstream
+source. \repofile{validate-dspark-config.sh} --- which duplicates the
+launcher's resolution logic exactly and prints the fully rendered vLLM command
+from \code{docker compose config} --- shows what the pair
+will actually run, without starting anything.
+
+``The server'' was always a convenient fiction. What exists is two
+containers, one rendezvous, and a set of acts --- start, stop, status,
+patch, warm --- each only half-finished until the second rank has answered
+for it; a green healthcheck on the head is a claim about one process, never
+about the TP group. Three consequences run through every rule above: order
+is a correctness property rather than a preference, exit codes are an API a
+supervisor will act on literally, and the bytes a boot depends on --- the
+normalized env snapshot, the 157\,GiB of weights, the JIT products --- have
+to be made durable before anyone can make them fast.
+
+\FloatBarrier
+\section*{Takeaways}
+\begin{itemize}
+  \item Order is a correctness property: worker (rank 1) first, head
+    (rank 0) last, and never bounce a loading pair. The head owns the
+    TCPStore rendezvous, and issue \ghissue{38} is what tearing it down
+    under a mid-load rank 1 looks like from the operator's chair.
+  \item Exit codes are an API for supervisors --- 0 ok, 1 real failure, 2
+    config error, 3 already-running-after-reboot --- and exit 3 proves only
+    that a head container exists, never that the TP group is healthy.
+  \item No operational act is finished until both ranks have answered for
+    it: a stop that cannot reach the worker must fail, and status must
+    probe every node. \code{restart: unless-stopped} is what makes reboots
+    self-healing \emph{and} what resurrects stale ranks into split-pair
+    states, so exactly one supervisor may be in charge.
+  \item Persist every JIT cache on the volume and warm by compile key, not
+    by load: on TP=2 a mid-serve JIT is a pair-killer through torch's
+    600\,s NCCL watchdog, and the six live \code{BLOCK_SIZE} keys are
+    reachable only through an exact-token ladder, each rung verified by
+    \code{POST /tokenize} --- WARN-only by contract.
+  \item Collect evidence before restarting, and treat configuration as
+    untrusted input: poke the flight-recorder FIFO on both ranks, wait for
+    the dump to finish, archive both ranks' traces together --- and for
+    every integer that reaches an evaluator, bound the length before the
+    value, force the base, normalize once, and ship that one form to both
+    nodes.
+\end{itemize}
+
+\chaptertransition{A pair operated this carefully eventually makes its own
+ceiling legible: six decode slots, one KV pool, and a single point of
+failure that no runbook can page around. The next chapter walks every
+documented way out --- a third Spark at TP=3, the Stage-C runtime lane,
+replicas behind a router, shared weights over NFS, persistent KV, and a
+genuinely 4-bit cache row --- each one measured rather than assumed. The
+first path is also the most counterintuitive: on this cluster the third GPU
+makes long-context prefill \emph{slower}, and the shard geometry that gets
+it there will boot cleanly, pass a health check, and serve fluent garbage.}

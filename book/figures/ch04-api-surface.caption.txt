@@ -1,0 +1,1 @@
+What a key buys, and what it does not. vLLM enforces the key on the /v1, /v2 and /inference prefixes only — two POST routes still run inference unauthenticated and six more are keyless, so network-level access control on the port remains mandatory. The redaction hotfix is fail-closed with no bypass because upstream prints every key verbatim at startup.

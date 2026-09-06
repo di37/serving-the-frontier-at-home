@@ -1,0 +1,229 @@
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+\markboth{Preface}{Preface}
+
+This handbook is a complete engineering account of one real system: the
+recipe from Mia's AI Lab that serves \textbf{DeepSeek-V4-Flash} --- a frontier-class,
+million-token-context, mixture-of-experts language model with native vision
+input --- on \textbf{two NVIDIA DGX Spark} desktop machines connected by a
+single 200\,Gb RoCE cable. The system is public: it lives in the repository
+\repofile{MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark}, together with
+every patch, benchmark, retraction, and dated changelog entry this book draws
+on. Nothing here is invented; where the repository itself marks evidence as
+partial or pending, this book says so.
+
+Why write it down at all? Because the hard part of this work is no longer
+getting the hardware. Two DGX Sparks fit on a desk, and the weights are a
+download away. The hard part is knowing which of a hundred flags actually
+matter, which innocuous-looking defaults encode an incident somebody already
+survived, and what a given measured number is evidence \emph{of}. That
+knowledge exists here in full --- but it exists as 42 patch sources, 66
+scripts, a changelog, and several hundred issue comments. That is the shape
+evidence takes, not the shape understanding takes. Reading it in order of
+commit is not the same as learning it.
+
+This book is the assembly. Same facts, reordered until they teach: mechanism
+before configuration, the incident before the flag that now prevents it,
+and every number still carrying the date and lane it was measured on. If it
+succeeds, a reader finishes able to reason about a serving stack they have
+never seen --- because the constraints that shaped this one are not
+peculiar to it.
+
+The book is organized in two parts. \textbf{Part I} (Chapters 1--13) is the
+DeepSeek recipe, told end to end. \textbf{Part II} (Chapters 14--17) studies
+the lab's sibling recipe, \repofile{MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks},
+which serves \textbf{GLM-5.3-Flash} on the same two-Spark kit but makes the
+opposite bet at nearly every layer: community-quantized EXL3 weights instead
+of native NVFP4, a DFlash2 drafter instead of DSpark, and purpose-built CUDA
+kernels where Part I leaned on the stock stack. Part II covers only what
+Part I does not --- the concepts that appear when the same hardware is pushed
+down a different road --- so the two parts together form one comparative
+study rather than two summaries.
+
+\section*{Who this book is for}
+
+The primary audience is \textbf{AI architect engineers} and \textbf{inference
+engineers}: people who design, deploy, and debug LLM serving systems and want
+to see, at full resolution, what it takes to run a frontier model outside a
+hyperscaler datacenter. The secondary audience is any strong technical reader.
+No prior knowledge of vLLM internals, RoCE networking, or speculative decoding
+is assumed --- each is taught from its mechanism before its configuration.
+
+Why study this particular system? Three reasons. First, it is
+\emph{small enough to understand completely}: two nodes, one model, one
+repository --- yet it exercises nearly every hard problem in modern inference:
+tensor parallelism over a real fabric, paged and quantized KV caches, sparse
+attention, speculative decoding under continuous batching, CUDA-graph capture,
+structured output grammars, multimodal input, and multi-week production
+operation. Second, it is \emph{unusually honest}: benchmark tables carry
+dates and noise bands, defaults are flipped back when new evidence arrives,
+and at least one published safety claim is formally retracted in-tree. Third,
+its engineering method --- digest-pinned images modified by fail-closed,
+source-locked boot-time patches --- is a transferable discipline that this
+book treats as a first-class subject.
+
+\section*{Prerequisites}
+
+The book assumes a practitioner's working knowledge of transformer inference
+rather than a researcher's: what a token is, why a KV cache exists, and why
+prefill and decode have different cost profiles. It assumes comfort on a
+Linux host --- shell, containers, service supervision --- and enough Python
+to read a patch, since patch sources are quoted throughout. It does not
+assume any ability to derive attention, train a model, or write CUDA.
+
+Everything specific to this system is taught before it is used. vLLM's
+scheduler and paged KV allocator, multi-head latent attention, sparse
+attention indexing, speculative decoding, CUDA-graph capture, RoCE and NCCL
+device selection, and Part~II's quantization formats each get their mechanism
+explained before any flag that configures them appears. A reader who has
+never opened a serving engine's source can follow the argument end to end.
+
+Reproducing the system, as opposed to reading about it, needs the hardware it
+was measured on:
+
+\begin{itemize}
+  \item \textbf{Two NVIDIA DGX Spark machines} (GB10, 128\,GB unified
+    LPDDR5X each). One node cannot hold the checkpoint: roughly 79\,GiB of
+    weights land on each rank, leaving 15--17\,GiB for KV.
+  \item \textbf{A direct ConnectX-7 link} --- the 200\,Gb QSFP ports cabled
+    between the two machines, with RoCEv2 reachable on both, plus a
+    management LAN for SSH and client traffic.
+  \item \textbf{Docker with Compose on both hosts}, passwordless SSH from
+    head to worker, and a Hugging Face token for the gated checkpoint.
+\end{itemize}
+
+That kit is where these numbers were measured, not what the book requires to
+be useful. The cost models, the failure modes, and the method transfer to any
+stack facing the same constraints --- a bandwidth-bound accelerator, a fabric
+between ranks, a pinned image that has to be patched rather than forked ---
+and the chapters are written so that each argument stands on its own
+reasoning, with the hardware supplying the evidence rather than the premise.
+
+\section*{Using this book to teach}
+
+The material is arranged for a course, not only for reference. Every chapter
+opens on a concrete failure or measurement, teaches the mechanism that
+explains it, and closes with takeaways that state a transferable rule. The
+callout boxes keep the four registers separate --- context
+(\textbf{Note}), footguns (\textbf{Hazard}), principles (\textbf{Field
+lesson}), narrative (\textbf{War story}) --- so any of them can be lifted for
+a slide without dragging the surrounding prose along.
+
+Seven modules group the chapters into teachable sessions:
+
+\begin{center}\small
+  \begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{68mm}@{}}
+    \toprule
+    Module & Chapters & The question it answers \\
+    \midrule
+    1. Foundations & 1--3 & What is the machine, and what is the model? \\
+    2. Configuration and fabric & 4--5 & How is it launched, and how do the ranks talk? \\
+    3. Change control & 6--7 & How do you modify a pinned system without breaking it? \\
+    4. Throughput & 8--9 & Where does decode time go, and what actually moves it? \\
+    5. Evidence and operations & 10--11 & How do you know a number is real, and how is this run daily? \\
+    6. Scale and synthesis & 12--13 & What lies beyond two nodes, and what generalizes? \\
+    7. Comparative study & 14--17 & What changes when the same hardware takes the opposite bet? \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+Two properties make this corpus unusually teachable. First, the evidence is
+public: every claim traces back to a patch, a script, or a dated benchmark
+file a student can open in a browser. Second, the sources record their own
+mistakes --- a retracted safety matrix, a default flipped and flipped back, a
+benchmark disowned as an artifact of a pathological prompt. Systems that
+publish only their successes teach facts; systems that publish their
+reversals teach judgment. Exercises follow almost for free: hand students the
+symptom and the repository, and ask them to reach the diagnosis the chapter
+reaches --- then compare their reasoning to the one the maintainers actually
+used, which is also on record.
+
+\section*{A living document}
+
+This is an edition of a system still in motion, and the book is versioned
+accordingly. Two revisions are planned rather than merely hoped for.
+
+The larger one is \textbf{four Sparks}. \Cref{ch:transplants} closes on
+\repofile{start-tp4.sh}, a TP=4 launcher shipped honestly unmeasured --- its
+own header reads ``untested here (no 4-Spark kit).'' That is the frontier of
+this material, and the one place where the book documents a configuration
+nobody has yet run. When a four-node kit exists, the TP=4 lane will get what
+\Cref{ch:scaling} gave the third Spark: a measured ledger, a fabric census,
+and a verdict. The interesting question is already framed. Adding a third
+node cut the bytes each rank must stream and moved the end metric by nothing,
+because fixed per-step cost ate the entire bandwidth gain. Whether a fourth
+node repeats that result, or finds a different wall, is not something the
+byte model of \Cref{ch:perf} can settle by arithmetic. It has to be measured.
+
+The second is \textbf{heavier models}. Both recipes here serve at the edge of
+what two 128\,GB nodes hold. A larger checkpoint, or the same one at higher
+precision, changes the weights-versus-KV split that \Cref{ch:profile} treats
+as a fixed premise --- and every capacity figure in this book sits downstream
+of that split. Those chapters will be re-derived rather than patched.
+
+Until then, the honest scope of this edition is two nodes. Where the book
+looks past that boundary it says so plainly, because
+\Cref{ch:transplants} is explicit that a claim about hardware nobody has
+measured is not a claim its own authors are willing to make. This book holds
+itself to the same standard.
+
+\section*{How this book was built}
+
+The text was produced from an exhaustive read of the repository at commit
+\code{f5665e8} (September 2026): all documentation, the complete changelog,
+all 42 patch sources (14{,}443 lines), all 66 scripts (19{,}154 lines), the
+launcher, the Compose files, the test suites, the source overlays, and every
+results file. Measured numbers are quoted from the repository's own dated
+records and are labeled with their measurement date and lane, because the
+repository itself insists on that discipline. Part II was produced the same
+way from an exhaustive read of the GLM repository (September 2026): both
+launchers, all 21 overlay sources including the CUDA kernels, the full test
+and bench suites, the abliteration pipeline, the design documents, and all
+125 commits of its history.
+
+\section*{Conventions}
+
+File paths appear as \repofile{docker-compose.dspark.yml}, environment
+variables as \envvar{DSPARK_MAX_INFLIGHT_PREFILLS}, code identifiers as
+\code{max_num_partial_prefills}, and GitHub issues in the repository's tracker
+as \ghissue{27}. Throughput is written in tokens per second (\tokspersec{}).
+Four kinds of callout boxes recur:
+
+\begin{hbnote}
+\textbf{Note} boxes add context or point to related sections.
+\end{hbnote}
+
+\begin{hbwarning}
+\textbf{Hazard} boxes mark footguns that have actually fired --- configuration
+traps, silent failure modes, and irreversible operations.
+\end{hbwarning}
+
+\begin{hblesson}
+\textbf{Field lesson} boxes distill a transferable engineering principle from
+a concrete incident in this system.
+\end{hblesson}
+
+\begin{hbwarstory}
+\textbf{War story} boxes recount a real incident, in the order it unfolded,
+including the wrong turns.
+\end{hbwarstory}
+
+\section*{Acknowledgements}
+
+This book exists because \textbf{Mia's AI Lab} does its engineering in the
+open. Both recipes, and every number quoted here, are public because the lab
+publishes its patches, its benchmarks, its dated changelogs --- and, more
+unusually, its retractions and its unexplained results. A handbook of this
+kind cannot be written about a system whose evidence is private. My thanks to
+the lab for the work and for the openness:
+\href{https://github.com/MiaAI-Lab}{github.com/MiaAI-Lab} and
+\href{https://x.com/MiaAI_lab}{@MiaAI\_lab}.
+
+The system documented here is the work of a community: Mia's AI Lab, who
+packaged and operate the recipe; \emph{drowzeys} (``Keys''), whose concurrency
+patches made batched DSpark correct; the Anemll project, whose prebuilt GB10
+vLLM image is the runtime foundation; Rafael Caricio and tonyd2wild, whose
+replicas established the reproduction baseline; \emph{localaiguyy}, whose
+attention-group padding enabled the three-node lane; and the many issue
+reporters whose numbered bugs structure half of this book. Their full credits
+live in \repofile{CREDITS.md}.

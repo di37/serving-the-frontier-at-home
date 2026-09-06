@@ -1,0 +1,174 @@
+% =============================================================================
+% preamble.tex — Isham Rashik brand edition (book-class port of brand.sty)
+% Compile with XeLaTeX/Tectonic. The hb* layer maps this handbook's existing
+% macros, colors, TikZ styles, and callouts onto the brand design system, so
+% the chapter files compile unchanged.
+% =============================================================================
+
+% ---- Brand design system ----------------------------------------------------
+\PassOptionsToPackage{obeyspaces}{url}% spaces inside \code{...} must render
+% Never strand a section heading (or its title rule) at a page bottom.
+\PassOptionsToPackage{nobottomtitles*}{titlesec}
+\usepackage{brand}
+\renewcommand{\bottomtitlespace}{0.1\textheight}
+
+% Extra TikZ libraries used by the handbook's figures (brand loads
+% positioning, calc, arrows.meta, fit).
+\usetikzlibrary{shapes.geometric,backgrounds,chains,matrix,
+  decorations.pathreplacing,shadows.blur}
+
+% Extra packages the handbook needs beyond brand.sty
+\usepackage{multirow}
+\usepackage{siunitx}
+\sisetup{group-separator={,},detect-all}
+\usepackage{emptypage}
+\usepackage{needspace}
+\usepackage{adjustbox}
+\usepackage{placeins}% \FloatBarrier: keep chapter floats inside the chapter body
+
+% ---- End-of-chapter transition ("story" bridge to the next chapter) ---------
+% The rule and its paragraph must never split across a page boundary.
+\newcommand{\chaptertransition}[1]{%
+  \par\bigskip\needspace{5\baselineskip}%
+  \noindent{\color{teal}\rule{2.2cm}{1.6pt}}\nopagebreak\par\smallskip
+  \nopagebreak\noindent{\color{brandgray}\itshape #1}\par}
+\usepackage[nameinlink,noabbrev]{cleveref} % after hyperref (loaded by brand)
+
+% ---- Book-class headers/footers (brand identity, on every page) -------------
+% Header: current section (sub-chapter) left, brand slogan right.
+% Footer: "Created by Isham Rashik" left on ALL pages, page counter right.
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+\fancyhead[L]{\small\color{brandgray}\itshape\nouppercase{\rightmark}}
+\fancyhead[R]{\small\color{brandgray}\brandslogan}
+\fancyfoot[L]{\small\color{brandgray}Created by \brandname}
+\fancyfoot[R]{\small\color{brandgray}Page \thepage\ / \pageref*{LastPage}}
+% Chapter openers and front-matter pages use the plain style: no header,
+% but the brand footer still appears so every page carries the byline.
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \renewcommand{\footrulewidth}{0.4pt}%
+  \fancyfoot[L]{\small\color{brandgray}Created by \brandname}%
+  \fancyfoot[R]{\small\color{brandgray}Page \thepage\ / \pageref*{LastPage}}%
+}
+% In front matter \rightmark is empty; fall back gracefully (book sets
+% \rightmark via \sectionmark in main matter only).
+
+% ---- Branded part pages (book class) ----------------------------------------
+\titleformat{\part}[display]
+  {\normalfont\filcenter}
+  {\badge{Part \thepart}}
+  {3ex}
+  {\fontsize{26}{32}\selectfont\bfseries\color{navy}}
+  [\vspace{3ex}{\color{teal}\rule{0.45\textwidth}{2pt}}]
+\titlespacing*{\part}{0pt}{0.28\textheight}{0pt}
+
+% ---- Branded chapter headings (book class; brand.sty styles sections only) --
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{navy}}
+  {\filleft\badge{Chapter \thechapter}}
+  {1.2ex}
+  {\vspace{0.6ex}\filright}
+  [\vspace{1ex}{\color{teal}\titlerule[2pt]}]
+\titlespacing*{\chapter}{0pt}{-10pt}{28pt}
+
+% ---- hb color layer: alias the handbook palette onto the brand palette ------
+% Every TikZ figure and macro below rebrands automatically through these.
+\colorlet{hbBlue}{navy}
+\colorlet{hbSteel}{brandgray}
+\colorlet{hbAccent}{clueerror}
+\colorlet{hbGreen}{brandgreen}
+\colorlet{hbAmber}{amber}
+\colorlet{hbGray}{ice}
+\colorlet{hbCode}{mist}
+\colorlet{hbKw}{brandcyan}
+\colorlet{hbStr}{mist}
+\colorlet{hbCom}{brandgray}
+
+% ---- Listings: branded dark code panels for the handbook's raw lstlistings --
+\lstdefinestyle{hb}{
+  basicstyle=\ttfamily\footnotesize\color{mist},
+  backgroundcolor=\color{navy},
+  keywordstyle=\color{brandcyan}\bfseries,
+  stringstyle=\color{mist},
+  commentstyle=\color{brandgray}\itshape,
+  identifierstyle=\color{mist},
+  numbers=none,
+  breaklines=true,
+  breakatwhitespace=true,
+  postbreak=\mbox{\textcolor{brandcyan}{$\hookrightarrow$}\space},
+  frame=single,
+  rulecolor=\color{codestroke},
+  framesep=5pt,
+  framerule=0.6pt,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  aboveskip=1.0em,
+  belowskip=1.0em,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+  showstringspaces=false,
+  literate={│}{|}1 {—}{--}1 {≈}{\ensuremath{\approx}}1 {≥}{\ensuremath{\geq}}1
+           {≤}{\ensuremath{\leq}}1 {×}{\ensuremath{\times}}1 {→}{\ensuremath{\rightarrow}}1
+           {∞}{\ensuremath{\infty}}1 {…}{...}3 {’}{'}1 {‘}{'}1 {“}{"}1 {”}{"}1,
+}
+\lstset{style=hb}
+\lstdefinelanguage{jsonhb}{
+  morestring=[b]",
+  morecomment=[l]{//},
+  literate={:}{{:}}1 {,}{{,}}1,
+}
+
+% ---- hb TikZ styles, recolored through the brand palette --------------------
+\tikzset{
+  hbnode/.style={draw=brandgray,thick,rounded corners=3pt,fill=white,
+    align=center,font=\small,inner sep=5pt,minimum height=8mm},
+  hbbox/.style={hbnode,fill=ice,draw=teal},
+  hbgpu/.style={hbnode,fill=brandgreen!12,draw=brandgreen!70!black},
+  hbhost/.style={hbnode,fill=lightgray!45},
+  hbpatch/.style={hbnode,fill=amber!15,draw=amber!80!black},
+  hbwarn/.style={hbnode,fill=clueerror!10,draw=clueerror!70!black},
+  hbfaint/.style={hbnode,dashed,draw=brandgray!70},
+  hbgroup/.style={draw=brandgray!60,dashed,rounded corners=4pt,inner sep=8pt},
+  hbarrow/.style={-{Stealth[length=2.4mm]},thick,color=brandgray},
+  hbflow/.style={hbarrow,color=navy},
+  hbfail/.style={hbarrow,color=clueerror},
+  hbok/.style={hbarrow,color=brandgreen!70!black},
+  hblabel/.style={font=\scriptsize\itshape,color=brandgray},
+  hbtitle/.style={font=\small\bfseries,color=navy},
+  every picture/.style={>={Stealth}},
+}
+
+% ---- Callout layer: handbook boxes mapped onto the brand clue set -----------
+\newenvironment{hbnote}{\begin{info}[Note]}{\end{info}}
+\newenvironment{hbwarning}{\begin{warningbox}[Hazard]}{\end{warningbox}}
+\newenvironment{hblesson}{\begin{tip}[Field lesson]}{\end{tip}}
+\newenvironment{hbwarstory}{\begin{example}[War story]}{\end{example}}
+
+% ---- Semantic macros (breakable code tokens; punctuation-only breaks) -------
+\def\UrlBreaks{\do\/\do\.\do\-\do\_\do\:\do\=\do\,\do\;\do\@\do\+}%
+\def\UrlBigBreaks{}%
+\DeclareUrlCommand\hburl{\urlstyle{tt}\small}
+\DeclareRobustCommand{\hbtok}[1]{\hburl{#1}}
+\newcommand{\repofile}[1]{\hbtok{#1}}
+\newcommand{\envvar}[1]{\hbtok{#1}}
+\newcommand{\code}[1]{\hbtok{#1}}
+\newcommand{\ghissue}[1]{\textcolor{brandblue}{\##1}}
+\newcommand{\tokspersec}{tok/s}
+\newcommand{\defon}{\textcolor{brandgreen!60!black}{\textbf{default on}}}
+\newcommand{\defoff}{\textcolor{amber!80!black}{\textbf{opt-in}}}
+\emergencystretch=1.5em
+
+% ---- Float placement tuning -------------------------------------------------
+\renewcommand{\topfraction}{0.85}
+\renewcommand{\bottomfraction}{0.6}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.8}
+\setlength{\floatsep}{10pt plus 4pt minus 2pt}
+\setlength{\textfloatsep}{14pt plus 6pt minus 4pt}
+
+% ---- Cross-reference link color (brand) -------------------------------------
+\hypersetup{linkcolor=brandblue,urlcolor=brandblue,citecolor=brandblue}

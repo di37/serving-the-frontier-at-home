@@ -1,0 +1,171 @@
+% =============================================================================
+% preamble.tex — shared packages, macros, listing styles, and TikZ styles.
+% Every chapter file MUST use only what is defined here (no extra \usepackage).
+% =============================================================================
+
+% ---- Core -------------------------------------------------------------------
+\PassOptionsToPackage{obeyspaces}{url}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.6cm,headheight=14pt]{geometry}
+\usepackage{setspace}
+\setstretch{1.06}
+\usepackage{emptypage}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small\nouppercase{\leftmark}}
+\fancyhead[RO]{\small\nouppercase{\rightmark}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+% ---- Color ------------------------------------------------------------------
+\usepackage{xcolor}
+\definecolor{hbBlue}{HTML}{1F4E79}     % headings / structure
+\definecolor{hbSteel}{HTML}{44546A}    % secondary
+\definecolor{hbAccent}{HTML}{C00000}   % warnings / hazards
+\definecolor{hbGreen}{HTML}{2E7D32}    % defaults-on / good paths
+\definecolor{hbAmber}{HTML}{B26A00}    % opt-in / caution
+\definecolor{hbGray}{HTML}{F2F2F2}     % code background
+\definecolor{hbCode}{HTML}{202020}
+\definecolor{hbKw}{HTML}{0B5394}
+\definecolor{hbStr}{HTML}{38761D}
+\definecolor{hbCom}{HTML}{888888}
+
+% ---- Tables, figures, math --------------------------------------------------
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb}
+\usepackage{siunitx}
+\sisetup{group-separator={,},detect-all}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{font=small,labelfont={bf,color=hbBlue}}
+
+% ---- Chapters/sections look -------------------------------------------------
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{hbBlue}}
+  {\filleft\normalsize\MakeUppercase{\chaptertitlename}~\Huge\thechapter}
+  {1ex}{\titlerule\vspace{1.5ex}\filright}
+  [\vspace{1ex}\titlerule]
+\titleformat*{\section}{\Large\bfseries\color{hbBlue}}
+\titleformat*{\subsection}{\large\bfseries\color{hbSteel}}
+\titleformat*{\subsubsection}{\normalsize\bfseries\color{hbSteel}}
+
+% ---- Listings ---------------------------------------------------------------
+\usepackage{listings}
+\lstdefinestyle{hb}{
+  basicstyle=\ttfamily\footnotesize\color{hbCode},
+  backgroundcolor=\color{hbGray},
+  keywordstyle=\color{hbKw}\bfseries,
+  stringstyle=\color{hbStr},
+  commentstyle=\color{hbCom}\itshape,
+  numbers=none,
+  breaklines=true,
+  breakatwhitespace=true,
+  postbreak=\mbox{\textcolor{hbSteel}{$\hookrightarrow$}\space},
+  frame=single,
+  rulecolor=\color{hbSteel!40},
+  framesep=4pt,
+  xleftmargin=6pt,
+  xrightmargin=6pt,
+  aboveskip=1.0em,
+  belowskip=1.0em,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+  showstringspaces=false,
+  literate={│}{|}1 {—}{--}1 {≈}{\ensuremath{\approx}}1 {≥}{\ensuremath{\geq}}1
+           {≤}{\ensuremath{\leq}}1 {×}{\ensuremath{\times}}1 {→}{\ensuremath{\rightarrow}}1
+           {∞}{\ensuremath{\infty}}1 {…}{...}3 {’}{'}1 {‘}{'}1 {“}{"}1 {”}{"}1,
+}
+\lstset{style=hb}
+\lstdefinelanguage{jsonhb}{
+  morestring=[b]",
+  morecomment=[l]{//},
+  literate={:}{{:}}1 {,}{{,}}1,
+}
+% Usage: \begin{lstlisting}[language=bash] ... \end{lstlisting}
+%        languages available: bash, Python, jsonhb, {} (plain)
+
+% ---- TikZ -------------------------------------------------------------------
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,shapes.geometric,fit,
+  backgrounds,chains,matrix,decorations.pathreplacing,shadows.blur}
+\tikzset{
+  hbnode/.style={draw=hbSteel,thick,rounded corners=2pt,fill=white,
+    align=center,font=\small,inner sep=5pt,minimum height=8mm},
+  hbbox/.style={hbnode,fill=hbBlue!8},
+  hbgpu/.style={hbnode,fill=hbGreen!12,draw=hbGreen!70!black},
+  hbhost/.style={hbnode,fill=hbSteel!10},
+  hbpatch/.style={hbnode,fill=hbAmber!15,draw=hbAmber!80!black},
+  hbwarn/.style={hbnode,fill=hbAccent!10,draw=hbAccent!70!black},
+  hbfaint/.style={hbnode,dashed,draw=hbSteel!60},
+  hbgroup/.style={draw=hbSteel!60,dashed,rounded corners=4pt,inner sep=8pt},
+  hbarrow/.style={-{Stealth[length=2.4mm]},thick,color=hbSteel},
+  hbflow/.style={hbarrow,color=hbBlue},
+  hbfail/.style={hbarrow,color=hbAccent},
+  hbok/.style={hbarrow,color=hbGreen!70!black},
+  hblabel/.style={font=\scriptsize\itshape,color=hbSteel},
+  hbtitle/.style={font=\small\bfseries,color=hbBlue},
+  every picture/.style={>={Stealth}},
+}
+
+% ---- Boxes ------------------------------------------------------------------
+\usepackage[most]{tcolorbox}
+\newtcolorbox{hbnote}{colback=hbBlue!5,colframe=hbBlue!70,title=Note,
+  fonttitle=\bfseries\small,left=2mm,right=2mm,top=1mm,bottom=1mm,
+  boxrule=0.6pt,arc=2pt,breakable}
+\newtcolorbox{hbwarning}{colback=hbAccent!5,colframe=hbAccent!70,title=Hazard,
+  fonttitle=\bfseries\small,left=2mm,right=2mm,top=1mm,bottom=1mm,
+  boxrule=0.6pt,arc=2pt,breakable}
+\newtcolorbox{hblesson}{colback=hbGreen!5,colframe=hbGreen!60!black,
+  title=Field lesson,fonttitle=\bfseries\small,left=2mm,right=2mm,top=1mm,
+  bottom=1mm,boxrule=0.6pt,arc=2pt,breakable}
+\newtcolorbox{hbwarstory}{colback=hbAmber!6,colframe=hbAmber!80!black,
+  title=War story,fonttitle=\bfseries\small,left=2mm,right=2mm,top=1mm,
+  bottom=1mm,boxrule=0.6pt,arc=2pt,breakable}
+
+% ---- Semantic macros --------------------------------------------------------
+% File paths, env vars, code identifiers: robust against _ # & etc.
+\newcommand{\repofile}[1]{\texttt{\small\detokenize{#1}}}
+\newcommand{\envvar}[1]{\texttt{\small\detokenize{#1}}}
+\newcommand{\code}[1]{\texttt{\small\detokenize{#1}}}
+\newcommand{\ghissue}[1]{\textcolor{hbBlue}{\##1}}
+\newcommand{\tokspersec}{tok/s}
+\newcommand{\defon}{\textcolor{hbGreen}{\textbf{default on}}}
+\newcommand{\defoff}{\textcolor{hbAmber}{\textbf{opt-in}}}
+
+% ---- Hyperref (last) --------------------------------------------------------
+\usepackage[colorlinks=true,linkcolor=hbBlue,urlcolor=hbSteel,
+  citecolor=hbBlue]{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+
+% ---- Breakable code tokens --------------------------------------------------
+% Long identifiers/paths must be able to break, or paragraphs overflow --- but
+% only at punctuation (_ / . - : = ,), never mid-identifier.
+\def\UrlBreaks{\do\/\do\.\do\-\do\_\do\:\do\=\do\,\do\;\do\@\do\+}%
+\DeclareUrlCommand\hburl{\urlstyle{tt}\small}
+% Robust: survives moving arguments (captions write to .aux); the .lof/.lot
+% lines are never executed because main.tex has no \listoffigures.
+\DeclareRobustCommand{\hbtok}[1]{\hburl{#1}}
+\renewcommand{\repofile}[1]{\hbtok{#1}}
+\renewcommand{\envvar}[1]{\hbtok{#1}}
+\renewcommand{\code}[1]{\hbtok{#1}}
+\emergencystretch=1.5em
+
+% ---- Float placement tuning -------------------------------------------------
+% Reduce lone float pages and dead bands between stacked floats.
+\renewcommand{\topfraction}{0.85}
+\renewcommand{\bottomfraction}{0.6}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.8}
+\setlength{\floatsep}{10pt plus 4pt minus 2pt}
+\setlength{\textfloatsep}{14pt plus 6pt minus 4pt}
+\usepackage{needspace}
